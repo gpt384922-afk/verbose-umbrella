@@ -229,6 +229,8 @@ class FakeVmBatchComputeApi:
         self.created = []
         self.deleted = []
         self.stopped = []
+        self.stop_in_flight = 0
+        self.max_stop_in_flight = 0
 
     async def get_latest_image_by_family(self, folder_id: str, family: str) -> str:
         return "image-1"
@@ -277,7 +279,11 @@ class FakeVmBatchComputeApi:
         self.deleted.append(instance_id)
 
     async def stop_instance(self, instance_id: str) -> None:
+        self.stop_in_flight += 1
+        self.max_stop_in_flight = max(self.max_stop_in_flight, self.stop_in_flight)
+        await asyncio.sleep(0.01)
         self.stopped.append(instance_id)
+        self.stop_in_flight -= 1
 
 
 class FakeVmBatchVpcApi:
@@ -354,6 +360,7 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
             compute_api.stopped,
         )
         self.assertEqual([], compute_api.deleted)
+        self.assertGreater(compute_api.max_stop_in_flight, 1)
         hunter._accept_match.assert_awaited_once()
         kwargs = hunter._accept_match.await_args.kwargs
         self.assertEqual("vm:vm-5", kwargs["address_id"])
@@ -393,6 +400,7 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
             compute_api.stopped,
         )
         self.assertEqual([], compute_api.deleted)
+        self.assertGreater(compute_api.max_stop_in_flight, 1)
         hunter._accept_match.assert_not_awaited()
 
 

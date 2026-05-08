@@ -718,13 +718,14 @@ class HunterEngine:
             if accepted:
                 keep_instance_ids.add(result.id)
 
-        for instance in instances:
-            if instance.id in keep_instance_ids:
-                continue
-            try:
-                await compute_api.stop_instance(instance.id)
-            except Exception as exc:  # noqa: BLE001
-                log_error(self.logger, "vm.stop.error", exc, instance_id=instance.id)
+        stop_instances = [instance for instance in instances if instance.id not in keep_instance_ids]
+        stop_results = await asyncio.gather(
+            *(compute_api.stop_instance(instance.id) for instance in stop_instances),
+            return_exceptions=True,
+        )
+        for instance, result in zip(stop_instances, stop_results):
+            if isinstance(result, Exception):
+                log_error(self.logger, "vm.stop.error", result, instance_id=instance.id)
                 await self._store_address_failed(scope.account_id, vm_record_id(instance.id))
 
         return bool(keep_instance_ids)
