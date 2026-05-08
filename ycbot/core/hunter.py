@@ -237,42 +237,64 @@ class HunterEngine:
                                 return
                         continue
 
-                    cloud = candidates.pop(0)
-                    matched = await self._hunt_cloud_once(
-                        job_id,
-                        scope,
-                        cloud,
-                        compute_api,
-                        vpc_api,
-                        stop_event,
-                        vm_config,
-                    )
-                    if matched or stop_event.is_set() or await self._scope_targets_reached(job_id, scope):
-                        continue
-                    hunt_state = await self.state.get_hunt(job_id)
-                    cloud_state = hunt_state.cloud_states.get(cloud.cloud_id) if hunt_state else None
-                    if cloud_state and cloud_state.lifecycle != CloudLifecycle.FAILED:
-                        candidates.append(cloud)
-                        continue
-                    if await self._cloud_has_saved_match(scope.account_id, cloud.cloud_id):
-                        await self._skip_protected_cloud_delete(scope.account_id, cloud.cloud_id, reason="post_hunt")
-                        continue
-
-                    await self.state.set_cloud_lifecycle(job_id, cloud.cloud_id, CloudLifecycle.DELETING)
-                    await self._set_cloud_progress(
-                        job_id,
-                        scope,
-                        cloud.cloud_id,
-                        HuntCloudStatus.FAILED,
-                        self.settings.hunt_cycles_per_cloud,
-                        notes="cloud failed; deleting",
-                    )
-                    deleting.append(
-                        DeletingCloud(
-                            cloud=cloud,
-                            task=asyncio.create_task(self._delete_cloud_for_replacement(scope, cloud, clouds_api)),
+                    batch = candidates
+                    candidates = []
+                    hunt_tasks = [
+                        (
+                            cloud,
+                            asyncio.create_task(
+                                self._hunt_cloud_once(
+                                    job_id,
+                                    scope,
+                                    cloud,
+                                    compute_api,
+                                    vpc_api,
+                                    stop_event,
+                                    vm_config,
+                                )
+                            ),
                         )
+                        for cloud in batch
+                    ]
+                    hunt_results = await asyncio.gather(
+                        *(task for _, task in hunt_tasks),
+                        return_exceptions=True,
                     )
+                    for (cloud, _), result in zip(hunt_tasks, hunt_results):
+                        if isinstance(result, asyncio.CancelledError):
+                            raise result
+                        if isinstance(result, Exception):
+                            log_error(self.logger, "hunt.cloud.error", result, cloud_id=cloud.cloud_id)
+                            matched = False
+                        else:
+                            matched = bool(result)
+
+                        if matched or stop_event.is_set() or await self._scope_targets_reached(job_id, scope):
+                            continue
+                        hunt_state = await self.state.get_hunt(job_id)
+                        cloud_state = hunt_state.cloud_states.get(cloud.cloud_id) if hunt_state else None
+                        if cloud_state and cloud_state.lifecycle != CloudLifecycle.FAILED:
+                            candidates.append(cloud)
+                            continue
+                        if await self._cloud_has_saved_match(scope.account_id, cloud.cloud_id):
+                            await self._skip_protected_cloud_delete(scope.account_id, cloud.cloud_id, reason="post_hunt")
+                            continue
+
+                        await self.state.set_cloud_lifecycle(job_id, cloud.cloud_id, CloudLifecycle.DELETING)
+                        await self._set_cloud_progress(
+                            job_id,
+                            scope,
+                            cloud.cloud_id,
+                            HuntCloudStatus.FAILED,
+                            self.settings.hunt_cycles_per_cloud,
+                            notes="cloud failed; deleting",
+                        )
+                        deleting.append(
+                            DeletingCloud(
+                                cloud=cloud,
+                                task=asyncio.create_task(self._delete_cloud_for_replacement(scope, cloud, clouds_api)),
+                            )
+                        )
             finally:
                 if deleting:
                     await asyncio.gather(*(item.task for item in deleting), return_exceptions=True)

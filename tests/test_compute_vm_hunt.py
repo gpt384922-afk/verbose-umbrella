@@ -12,6 +12,7 @@ from ycbot.core.hunter import MatchNotification
 from ycbot.core.ssh_keys import generate_ssh_keypair
 from ycbot.core.vm_config import VmHuntConfig
 from ycbot.core.scheduler import HuntScheduler, HuntStartScope
+from ycbot.core.state_manager import CloudLifecycle
 from ycbot.db.enums import CloudState as DbCloudState
 from ycbot.yc import Address
 from ycbot.yc.compute import ComputeApi, Instance
@@ -402,6 +403,95 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], compute_api.deleted)
         self.assertGreater(compute_api.max_stop_in_flight, 1)
         hunter._accept_match.assert_not_awaited()
+
+
+class HunterScopeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_run_scope_hunts_ready_clouds_concurrently(self) -> None:
+        state = SimpleNamespace()
+        state.set_cloud_lifecycle = AsyncMock()
+        state.get_hunt = AsyncMock(
+            return_value=SimpleNamespace(
+                cloud_states={
+                    f"cloud-{index}": SimpleNamespace(lifecycle=CloudLifecycle.FAILED)
+                    for index in range(3)
+                }
+            )
+        )
+        hunter = HunterEngine(
+            settings=SimpleNamespace(
+                hunt_cycles_per_cloud=1,
+                hunt_cloud_target_count=5,
+            ),
+            db=SimpleNamespace(),
+            state=state,
+            semaphore=asyncio.Semaphore(16),
+            logger=logging.getLogger("test"),
+        )
+        clouds = [
+            ManagedCloud(
+                account_id="acc-1",
+                organization_id="org-1",
+                cloud_id=f"cloud-{index}",
+                cloud_name=f"Cloud {index}",
+                folder_id=f"folder-{index}",
+                billing_account_id="billing-1",
+            )
+            for index in range(3)
+        ]
+        in_flight = 0
+        max_in_flight = 0
+        completed = 0
+
+        async def fake_hunt(*args, **kwargs):
+            nonlocal in_flight, max_in_flight, completed
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            completed += 1
+            return False
+
+        async def scope_targets_reached(*args, **kwargs):
+            return completed >= len(clouds)
+
+        hunter._get_account = AsyncMock(return_value=SimpleNamespace(oauth_token="token", proxy_url=None))
+        hunter._ensure_scope_clouds = AsyncMock(return_value=(clouds, []))
+        hunter._collect_replacements = AsyncMock(return_value=[])
+        hunter._hunt_cloud_once = AsyncMock(side_effect=fake_hunt)
+        hunter._scope_targets_reached = AsyncMock(side_effect=scope_targets_reached)
+        hunter._set_cloud_progress = AsyncMock()
+        hunter._cloud_has_saved_match = AsyncMock(return_value=False)
+        hunter._delete_cloud_for_replacement = AsyncMock(return_value=True)
+
+        class FakeYcClient:
+            def __init__(self, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+        class FakeApi:
+            def __init__(self, **kwargs):
+                pass
+
+        with (
+            patch("ycbot.core.hunter.YcClient", FakeYcClient),
+            patch("ycbot.core.hunter.CloudsApi", FakeApi),
+            patch("ycbot.core.hunter.ComputeApi", FakeApi),
+            patch("ycbot.core.hunter.VpcApi", FakeApi),
+        ):
+            await hunter._run_scope(
+                "job-1",
+                ScopeDescriptor(account_id="acc-1", organization_id="org-1"),
+                asyncio.Event(),
+                VmHuntConfig.default(),
+            )
+
+        self.assertEqual(len(clouds), hunter._hunt_cloud_once.await_count)
+        self.assertGreater(max_in_flight, 1)
 
 
 class NotificationVmTests(unittest.TestCase):
