@@ -51,13 +51,15 @@ def _match_text(notification: MatchNotification, *, custom_emoji: bool) -> str:
             f"vm={code(notification.resource_id or notification.address_id)}\n"
             f"zone={code(notification.zone_id or '-')}\n"
         )
-        if notification.ssh_username or notification.ssh_private_key:
+        if notification.ssh_username or notification.ssh_public_key or notification.ssh_private_key:
             access_block = (
                 f"\n\n{key} <b>SSH</b>\n"
                 f"login={code(notification.ssh_username or 'user')}\n"
             )
+            if notification.ssh_public_key:
+                access_block += f"public:\n<pre>{escape(notification.ssh_public_key)}</pre>\n"
             if notification.ssh_private_key:
-                access_block += f"<pre>{escape(notification.ssh_private_key)}</pre>"
+                access_block += f"private:\n<pre>{escape(notification.ssh_private_key)}</pre>"
 
     return (
         f"{diamond} | <b>IP выбит</b> ▾\n\n"

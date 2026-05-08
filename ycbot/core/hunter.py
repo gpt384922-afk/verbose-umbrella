@@ -78,6 +78,7 @@ class MatchNotification:
     resource_id: str | None = None
     resource_type: str | None = None
     ssh_username: str | None = None
+    ssh_public_key: str | None = None
     ssh_private_key: str | None = None
     zone_id: str | None = None
 
@@ -649,6 +650,7 @@ class HunterEngine:
                 resource_id=result.id,
                 resource_type="vm",
                 ssh_username=keypair.username,
+                ssh_public_key=keypair.public_key,
                 ssh_private_key=keypair.private_key,
                 zone_id=result.zone_id,
             )
@@ -927,6 +929,7 @@ class HunterEngine:
         resource_id: str | None = None,
         resource_type: str | None = None,
         ssh_username: str | None = None,
+        ssh_public_key: str | None = None,
         ssh_private_key: str | None = None,
         zone_id: str | None = None,
     ) -> bool:
@@ -981,6 +984,7 @@ class HunterEngine:
                     resource_id=resource_id,
                     resource_type=resource_type,
                     ssh_username=ssh_username,
+                    ssh_public_key=ssh_public_key,
                     ssh_private_key=ssh_private_key,
                     zone_id=zone_id,
                 )

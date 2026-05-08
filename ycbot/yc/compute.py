@@ -53,6 +53,10 @@ class ComputeApi:
         ssh_username: str,
         ssh_public_key: str,
     ) -> Instance:
+        metadata = {
+            "ssh-keys": f"{ssh_username}:{ssh_public_key}",
+            "user-data": self._cloud_init_user_data(ssh_username, ssh_public_key),
+        }
         payload = {
             "folderId": folder_id,
             "name": name,
@@ -82,7 +86,7 @@ class ComputeApi:
                 }
             ],
             "schedulingPolicy": {"preemptible": True},
-            "metadata": {"ssh-keys": f"{ssh_username}:{ssh_public_key}"},
+            "metadata": metadata,
             "labels": {"managed_by": "ychunter"},
         }
         data = await self.client.request_json("POST", self.settings.yc_compute_instance_url, body=payload)
@@ -169,3 +173,20 @@ class ComputeApi:
             if nat.get("address"):
                 return nat["address"]
         return None
+
+    @staticmethod
+    def _cloud_init_user_data(ssh_username: str, ssh_public_key: str) -> str:
+        return "\n".join(
+            [
+                "#cloud-config",
+                "users:",
+                "  - default",
+                f"  - name: {ssh_username}",
+                "    groups: sudo",
+                "    shell: /bin/bash",
+                "    sudo: ['ALL=(ALL) NOPASSWD:ALL']",
+                "    ssh_authorized_keys:",
+                f"      - {ssh_public_key}",
+                "",
+            ]
+        )

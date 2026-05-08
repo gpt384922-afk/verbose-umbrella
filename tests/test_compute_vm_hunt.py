@@ -87,7 +87,12 @@ class ComputeApiTests(unittest.IsolatedAsyncioTestCase):
             body["networkInterfaceSpecs"],
         )
         self.assertEqual({"preemptible": True}, body["schedulingPolicy"])
-        self.assertEqual({"ssh-keys": "user:ssh-ed25519 AAAA test"}, body["metadata"])
+        self.assertEqual("user:ssh-ed25519 AAAA test", body["metadata"]["ssh-keys"])
+        user_data = body["metadata"]["user-data"]
+        self.assertIn("#cloud-config", user_data)
+        self.assertIn("name: user", user_data)
+        self.assertIn("ssh_authorized_keys:", user_data)
+        self.assertIn("ssh-ed25519 AAAA test", user_data)
 
     def test_extract_external_ip_reads_one_to_one_nat(self) -> None:
         ip = ComputeApi.extract_external_ip(
@@ -337,6 +342,7 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("vm-5", kwargs["resource_id"])
         self.assertEqual("vm", kwargs["resource_type"])
         self.assertEqual("user", kwargs["ssh_username"])
+        self.assertTrue(kwargs["ssh_public_key"].startswith("ssh-ed25519 "))
         self.assertIn("PRIVATE KEY", kwargs["ssh_private_key"])
         self.assertEqual("ru-central1-a", kwargs["zone_id"])
 
@@ -388,6 +394,7 @@ class NotificationVmTests(unittest.TestCase):
                 resource_id="vm-1",
                 resource_type="vm",
                 ssh_username="user",
+                ssh_public_key="ssh-ed25519 AAAA test",
                 ssh_private_key="-----BEGIN OPENSSH PRIVATE KEY-----\nkey\n-----END OPENSSH PRIVATE KEY-----",
                 zone_id="ru-central1-a",
             ),
@@ -397,6 +404,7 @@ class NotificationVmTests(unittest.TestCase):
         self.assertIn("vm-1", text)
         self.assertIn("ru-central1-a", text)
         self.assertIn("user", text)
+        self.assertIn("ssh-ed25519 AAAA test", text)
         self.assertIn("PRIVATE KEY", text)
 
 
