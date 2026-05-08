@@ -124,6 +124,7 @@ class HuntJob(IdMixin, TimestampMixin, Base):
     )
     requested_ip_count: Mapped[int] = mapped_column(Integer, nullable=False)
     target_prefixes: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    vm_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     requested_by_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     progress_message_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     progress_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

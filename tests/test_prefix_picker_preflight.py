@@ -5,8 +5,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from ycbot.bot.handlers import _hunt_confirm_text, _hunt_prefixes_text
-from ycbot.bot.keyboards import hunt_prefixes_keyboard
+from ycbot.bot.handlers import _hunt_confirm_text, _hunt_prefixes_text, _hunt_vm_config_text
+from ycbot.bot.keyboards import hunt_prefixes_keyboard, hunt_vm_config_keyboard
+from ycbot.core.vm_config import VmHuntConfig
 from ycbot.core.hunter import HunterEngine, ManagedCloud
 from ycbot.core.prefixes import KNOWN_PREFIX_VALUES, match_known_prefix, validate_hunt_prefixes
 from ycbot.core.scheduler import HuntScheduler, HuntStartRequest, HuntStartScope
@@ -110,6 +111,30 @@ class PrefixCatalogUiTests(unittest.TestCase):
         )
 
         self.assertIn("Существующие IP из известных префиксов не найдены", text)
+
+    def test_hunt_vm_config_text_and_keyboard_show_selected_resources(self) -> None:
+        config = VmHuntConfig(
+            platform_id="standard-v3",
+            cores=4,
+            core_fraction=50,
+            memory_gb=2,
+            disk_type_id="network-ssd",
+            disk_size_gb=20,
+        )
+        text = _hunt_vm_config_text(config)
+        markup = hunt_vm_config_keyboard(config).as_markup()
+        buttons = [button for row in markup.inline_keyboard for button in row]
+        by_callback = {button.callback_data: button.text for button in buttons}
+
+        self.assertIn("Intel Ice Lake", text)
+        self.assertIn("4 vCPU", text)
+        self.assertIn("2 GB", text)
+        self.assertIn("SSD", text)
+        self.assertIn("20 GB", text)
+        self.assertIn("50%", text)
+        self.assertIn("🟢", by_callback["hunt:vm:platform:standard-v3"])
+        self.assertIn("🟢", by_callback["hunt:vm:cores:4"])
+        self.assertIn("Дальше", by_callback["hunt:vm_done"])
 
 
 class SchedulerPrefixTests(unittest.IsolatedAsyncioTestCase):

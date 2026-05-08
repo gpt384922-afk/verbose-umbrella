@@ -10,6 +10,7 @@ from ycbot.config import Settings
 from ycbot.core.prefixes import match_known_prefix, validate_hunt_prefixes
 from ycbot.core.hunter import HunterEngine, ManagedCloud, VM_RECORD_PREFIX, strip_vm_record_id
 from ycbot.core.state_manager import CloudLifecycle, HuntState, StateManager, TaskLifecycle
+from ycbot.core.vm_config import VmHuntConfig
 from ycbot.db.enums import CloudState as DbCloudState
 from ycbot.db.enums import HuntStatus
 from ycbot.db.repositories import (
@@ -38,6 +39,7 @@ class HuntStartRequest:
     prefixes: list[str]
     target_count: int
     scopes: list[HuntStartScope]
+    vm_config: dict | VmHuntConfig | None = None
 
 
 @dataclass(slots=True)
@@ -533,6 +535,11 @@ class HuntScheduler:
         if request.target_count not in {1, 2}:
             raise ValueError("target_count must be 1 or 2")
         prefixes = validate_hunt_prefixes(request.prefixes)
+        vm_config = (
+            request.vm_config
+            if isinstance(request.vm_config, VmHuntConfig)
+            else VmHuntConfig.from_dict(request.vm_config)
+        )
         if not request.scopes:
             raise ValueError("at least one organization scope must be selected")
 
@@ -554,12 +561,13 @@ class HuntScheduler:
                     requested_by_chat_id=request.requested_by_chat_id,
                     target_prefixes=prefixes,
                     requested_ip_count=request.target_count,
+                    vm_config=vm_config.to_dict(),
                     scopes=scopes,
                 )
                 await session.commit()
 
             stop_event = asyncio.Event()
-            task = asyncio.create_task(self._run_job(job.id, stop_event))
+            task = asyncio.create_task(self._run_job(job.id, stop_event, vm_config))
 
             async with self._lock:
                 self._tasks[job.id] = SchedulerTask(job_id=job.id, task=task, stop_event=stop_event)
@@ -718,9 +726,14 @@ class HuntScheduler:
             ],
         }
 
-    async def _run_job(self, job_id: str, stop_event: asyncio.Event) -> None:
+    async def _run_job(
+        self,
+        job_id: str,
+        stop_event: asyncio.Event,
+        vm_config: VmHuntConfig | None = None,
+    ) -> None:
         try:
-            await self.hunter.run_job(job_id, stop_event)
+            await self.hunter.run_job(job_id, stop_event, vm_config)
         except asyncio.CancelledError:
             with contextlib.suppress(Exception):
                 await self.state.set_task_status(job_id, TaskLifecycle.CANCELLED)
@@ -1001,7 +1014,7 @@ class HuntScheduler:
             return False
 
         if address_id.startswith(VM_RECORD_PREFIX):
-            await compute_api.delete_instance(strip_vm_record_id(address_id))
+            await compute_api.stop_instance(strip_vm_record_id(address_id))
         else:
             await vpc_api.delete_address(address_id)
         await self._mark_deleted(account_id, address_id)

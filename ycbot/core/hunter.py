@@ -8,7 +8,8 @@ from datetime import datetime, timezone
 
 from ycbot.config import Settings
 from ycbot.core.prefixes import match_known_prefix, match_prefix
-from ycbot.core.ssh_keys import generate_ssh_keypair
+from ycbot.core.ssh_keys import SshKeyPair, generate_ssh_keypair
+from ycbot.core.vm_config import VmHuntConfig
 from ycbot.core.state_manager import CloudLifecycle, CloudState, MatchState, StateManager, TaskLifecycle
 from ycbot.db.enums import CloudState as DbCloudState
 from ycbot.db.enums import HuntCloudStatus, HuntStatus
@@ -102,11 +103,18 @@ class HunterEngine:
         self.semaphore = semaphore
         self.logger = logger
         self._match_notifier: MatchNotifier | None = None
+        self._vm_keypairs: dict[tuple[str, str], SshKeyPair] = {}
 
     def set_match_notifier(self, notifier: MatchNotifier | None) -> None:
         self._match_notifier = notifier
 
-    async def run_job(self, job_id: str, stop_event: asyncio.Event) -> None:
+    async def run_job(
+        self,
+        job_id: str,
+        stop_event: asyncio.Event,
+        vm_config: VmHuntConfig | None = None,
+    ) -> None:
+        vm_config = vm_config or VmHuntConfig.from_settings(self.settings)
         job, scopes = await self._load_job(job_id)
         if job is None:
             raise RuntimeError(f"hunt job not found: {job_id}")
@@ -122,7 +130,7 @@ class HunterEngine:
             for scope in scopes
         ]
         scope_tasks = [
-            asyncio.create_task(self._run_scope(job_id, scope, stop_event))
+            asyncio.create_task(self._run_scope(job_id, scope, stop_event, vm_config))
             for scope in scope_descriptors
         ]
 
@@ -147,7 +155,13 @@ class HunterEngine:
         await self.state.set_task_status(job_id, TaskLifecycle.FAILED, error=error_text)
         await self._set_job_status(job_id, HuntStatus.FAILED, error=error_text)
 
-    async def _run_scope(self, job_id: str, scope: ScopeDescriptor, stop_event: asyncio.Event) -> None:
+    async def _run_scope(
+        self,
+        job_id: str,
+        scope: ScopeDescriptor,
+        stop_event: asyncio.Event,
+        vm_config: VmHuntConfig,
+    ) -> None:
         account = await self._get_account(scope.account_id)
         if account is None:
             raise RuntimeError(f"account not found: {scope.account_id}")
@@ -224,8 +238,21 @@ class HunterEngine:
                         continue
 
                     cloud = candidates.pop(0)
-                    matched = await self._hunt_cloud_once(job_id, scope, cloud, compute_api, vpc_api, stop_event)
+                    matched = await self._hunt_cloud_once(
+                        job_id,
+                        scope,
+                        cloud,
+                        compute_api,
+                        vpc_api,
+                        stop_event,
+                        vm_config,
+                    )
                     if matched or stop_event.is_set() or await self._scope_targets_reached(job_id, scope):
+                        continue
+                    hunt_state = await self.state.get_hunt(job_id)
+                    cloud_state = hunt_state.cloud_states.get(cloud.cloud_id) if hunt_state else None
+                    if cloud_state and cloud_state.lifecycle != CloudLifecycle.FAILED:
+                        candidates.append(cloud)
                         continue
                     if await self._cloud_has_saved_match(scope.account_id, cloud.cloud_id):
                         await self._skip_protected_cloud_delete(scope.account_id, cloud.cloud_id, reason="post_hunt")
@@ -501,12 +528,21 @@ class HunterEngine:
         compute_api: ComputeApi,
         vpc_api: VpcApi,
         stop_event: asyncio.Event,
+        vm_config: VmHuntConfig,
     ) -> bool:
         await self.state.set_cloud_lifecycle(job_id, cloud.cloud_id, CloudLifecycle.HUNTING)
         await self._set_cloud_progress(job_id, scope, cloud.cloud_id, HuntCloudStatus.RUNNING, 0, notes="hunting vm batch")
         await self.state.increment_cloud_attempt(job_id, cloud.cloud_id)
         try:
-            matched = await self._hunt_cloud_vm_batch(job_id, scope, cloud, compute_api, vpc_api, stop_event)
+            matched = await self._hunt_cloud_vm_batch(
+                job_id,
+                scope,
+                cloud,
+                compute_api,
+                vpc_api,
+                stop_event,
+                vm_config,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -547,14 +583,14 @@ class HunterEngine:
             )
             return True
 
-        await self.state.set_cloud_lifecycle(job_id, cloud.cloud_id, CloudLifecycle.FAILED)
+        await self.state.set_cloud_lifecycle(job_id, cloud.cloud_id, CloudLifecycle.IDLE)
         await self._set_cloud_progress(
             job_id,
             scope,
             cloud.cloud_id,
-            HuntCloudStatus.FAILED,
+            HuntCloudStatus.RUNNING,
             1,
-            notes="vm batch missed",
+            notes="vm batch missed; stopped for next ip cycle",
         )
         return False
 
@@ -566,6 +602,7 @@ class HunterEngine:
         compute_api: ComputeApi,
         vpc_api: VpcApi,
         stop_event: asyncio.Event,
+        vm_config: VmHuntConfig,
     ) -> bool:
         if stop_event.is_set():
             return False
@@ -579,15 +616,25 @@ class HunterEngine:
         if not subnets:
             raise RuntimeError(f"no subnet in allowed VM zones: folder={cloud.folder_id}")
 
-        keypair = generate_ssh_keypair(self.settings.hunt_vm_username)
+        keypair_key = (job_id, cloud.cloud_id)
+        keypair = self._vm_keypairs.get(keypair_key)
+        if keypair is None:
+            keypair = generate_ssh_keypair(self.settings.hunt_vm_username)
+            self._vm_keypairs[keypair_key] = keypair
         image_id = await compute_api.get_latest_image_by_family(
             self.settings.hunt_vm_image_folder_id,
             self.settings.hunt_vm_image_family,
         )
         batch_size = max(1, self.settings.hunt_vm_batch_size)
 
+        existing_instances = [
+            item
+            for item in await compute_api.list_instances(cloud.folder_id)
+            if (item.name or "").startswith("hunter-vm-")
+        ][:batch_size]
+
         create_tasks = []
-        for index in range(batch_size):
+        for index in range(len(existing_instances), batch_size):
             subnet = subnets[index % len(subnets)]
             name = self._next_vm_name(cloud.cloud_id, index)
             create_tasks.append(
@@ -600,12 +647,13 @@ class HunterEngine:
                         image_id=image_id,
                         ssh_username=keypair.username,
                         ssh_public_key=keypair.public_key,
+                        vm_config=vm_config,
                     )
                 )
             )
 
         creation_results = await asyncio.gather(*create_tasks, return_exceptions=True)
-        instances = []
+        instances = list(existing_instances)
         for result in creation_results:
             if isinstance(result, Exception):
                 log_error(self.logger, "vm.create.error", result, cloud_id=cloud.cloud_id)
@@ -616,16 +664,28 @@ class HunterEngine:
         if not instances:
             return False
 
-        poll_tasks = [
-            asyncio.create_task(
-                compute_api.wait_for_external_ip(
-                    instance.id,
-                    poll_seconds=self.settings.hunt_vm_poll_seconds,
-                    timeout_seconds=self.settings.hunt_vm_poll_timeout_seconds,
+        poll_tasks = []
+        for instance in instances:
+            if instance.id in {item.id for item in existing_instances}:
+                poll_tasks.append(
+                    asyncio.create_task(
+                        compute_api.refresh_instance_dynamic_ip(
+                            instance.id,
+                            poll_seconds=self.settings.hunt_vm_poll_seconds,
+                            timeout_seconds=self.settings.hunt_vm_poll_timeout_seconds,
+                        )
+                    )
                 )
-            )
-            for instance in instances
-        ]
+            else:
+                poll_tasks.append(
+                    asyncio.create_task(
+                        compute_api.wait_for_external_ip(
+                            instance.id,
+                            poll_seconds=self.settings.hunt_vm_poll_seconds,
+                            timeout_seconds=self.settings.hunt_vm_poll_timeout_seconds,
+                        )
+                    )
+                )
         poll_results = await asyncio.gather(*poll_tasks, return_exceptions=True)
 
         keep_instance_ids: set[str] = set()
@@ -634,6 +694,7 @@ class HunterEngine:
             if isinstance(result, Exception) or result is None or not result.ip:
                 continue
 
+            await self._store_address_created(job_id, cloud, vm_record_id(result.id), result.ip)
             await self.state.add_checked_ip(job_id, cloud.cloud_id, result.ip)
             prefix = await self._matched_prefix(job_id, result.ip)
             if not prefix or len(keep_instance_ids) >= target:
@@ -661,10 +722,9 @@ class HunterEngine:
             if instance.id in keep_instance_ids:
                 continue
             try:
-                await compute_api.delete_instance(instance.id)
-                await self._store_address_deleted(scope.account_id, vm_record_id(instance.id))
+                await compute_api.stop_instance(instance.id)
             except Exception as exc:  # noqa: BLE001
-                log_error(self.logger, "vm.delete.error", exc, instance_id=instance.id)
+                log_error(self.logger, "vm.stop.error", exc, instance_id=instance.id)
                 await self._store_address_failed(scope.account_id, vm_record_id(instance.id))
 
         return bool(keep_instance_ids)

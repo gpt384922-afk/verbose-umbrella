@@ -314,6 +314,7 @@ class HuntRepository:
         requested_by_chat_id: int,
         target_prefixes: list[str],
         requested_ip_count: int,
+        vm_config: dict | None = None,
         scopes: list[HuntScopeInput],
     ) -> HuntJob:
         job = HuntJob(
@@ -322,6 +323,7 @@ class HuntRepository:
             requested_by_chat_id=requested_by_chat_id,
             target_prefixes=target_prefixes,
             requested_ip_count=requested_ip_count,
+            vm_config=vm_config,
         )
         self.session.add(job)
         await self.session.flush()

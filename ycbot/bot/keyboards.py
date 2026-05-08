@@ -4,6 +4,15 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ycbot.bot.ui import CUSTOM_EMOJI_IDS
 from ycbot.core.prefixes import KNOWN_PREFIXES
+from ycbot.core.vm_config import (
+    ALLOWED_CORE_FRACTIONS,
+    ALLOWED_CORES,
+    ALLOWED_DISK_SIZE_GB,
+    ALLOWED_MEMORY_GB,
+    DISK_TYPE_LABELS,
+    PLATFORM_LABELS,
+    VmHuntConfig,
+)
 
 
 def menu_keyboard(*, can_manage_branches: bool = False) -> InlineKeyboardBuilder:
@@ -154,10 +163,37 @@ def target_keyboard() -> InlineKeyboardBuilder:
     return kb
 
 
+def hunt_vm_config_keyboard(config: VmHuntConfig) -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    for platform_id, label in PLATFORM_LABELS.items():
+        marker = "🟢" if config.platform_id == platform_id else "⚪"
+        kb.button(text=f"{marker} {label}", callback_data=f"hunt:vm:platform:{platform_id}")
+    for cores in ALLOWED_CORES:
+        marker = "🟢" if config.cores == cores else "⚪"
+        kb.button(text=f"{marker} {cores} vCPU", callback_data=f"hunt:vm:cores:{cores}")
+    for memory_gb in ALLOWED_MEMORY_GB:
+        marker = "🟢" if config.memory_gb == memory_gb else "⚪"
+        kb.button(text=f"{marker} {memory_gb} GB RAM", callback_data=f"hunt:vm:memory:{memory_gb}")
+    for disk_type_id, label in DISK_TYPE_LABELS.items():
+        marker = "🟢" if config.disk_type_id == disk_type_id else "⚪"
+        kb.button(text=f"{marker} {label}", callback_data=f"hunt:vm:disk_type:{disk_type_id}")
+    for disk_size_gb in ALLOWED_DISK_SIZE_GB:
+        marker = "🟢" if config.disk_size_gb == disk_size_gb else "⚪"
+        kb.button(text=f"{marker} {disk_size_gb} GB disk", callback_data=f"hunt:vm:disk_size:{disk_size_gb}")
+    for fraction in ALLOWED_CORE_FRACTIONS:
+        marker = "🟢" if config.core_fraction == fraction else "⚪"
+        kb.button(text=f"{marker} {fraction}%", callback_data=f"hunt:vm:fraction:{fraction}")
+    kb.button(text="Дальше", callback_data="hunt:vm_done", style="success")
+    kb.button(text="Назад", callback_data="hunt:back:target")
+    kb.button(text="Отмена", callback_data="hunt:cancel", style="danger")
+    kb.adjust(1, 1, 1, 3, 4, 3, 4, 3, 1, 1, 1)
+    return kb
+
+
 def hunt_confirm_keyboard() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     kb.button(text="Запустить", callback_data="hunt:confirm", style="success")
-    kb.button(text="Назад", callback_data="hunt:back:target")
+    kb.button(text="Назад", callback_data="hunt:back:vm_config")
     kb.button(text="Отмена", callback_data="hunt:cancel", style="danger")
     kb.adjust(1)
     return kb

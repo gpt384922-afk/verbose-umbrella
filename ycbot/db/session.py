@@ -60,6 +60,7 @@ class Database:
                         """
                     )
                 )
+                await conn.execute(text("ALTER TABLE hunt_jobs ADD COLUMN IF NOT EXISTS vm_config JSONB"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_accounts_branch_id ON accounts(branch_id)"))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_hunt_jobs_branch_id ON hunt_jobs(branch_id)"))
                 await conn.execute(text("ALTER TABLE accounts DROP CONSTRAINT IF EXISTS accounts_name_key"))

@@ -26,6 +26,7 @@ from ycbot.bot.keyboards import (
     hunt_detail_keyboard,
     hunt_organizations_keyboard,
     hunt_prefixes_keyboard,
+    hunt_vm_config_keyboard,
     hunts_keyboard,
     menu_keyboard,
     target_keyboard,
@@ -34,6 +35,7 @@ from ycbot.bot.runtime import BotRuntimeScope
 from ycbot.bot.ui import ce, code, main_menu_text, quote
 from ycbot.core.prefixes import KNOWN_PREFIXES
 from ycbot.core.scheduler import HuntStartRequest, HuntScheduler, HuntStartScope
+from ycbot.core.vm_config import VmHuntConfig
 
 router = Router(name="main_handlers")
 
@@ -52,6 +54,7 @@ class StartHuntFlow(StatesGroup):
     organizations = State()
     prefixes = State()
     target = State()
+    vm_config = State()
     confirm = State()
 
 
@@ -170,7 +173,7 @@ def _hunt_accounts_text() -> str:
     return (
         f"{ce('bolt')} | <b>Запуск ханта</b> ▾\n\n"
         + quote(
-            f"{ce('key')} <b>Шаг 1/4</b>\n"
+            f"{ce('key')} <b>Шаг 1/5</b>\n"
             "Выбери один или несколько аккаунтов."
         )
     )
@@ -180,7 +183,7 @@ def _hunt_organizations_text() -> str:
     return (
         f"{ce('bolt')} | <b>Запуск ханта</b> ▾\n\n"
         + quote(
-            f"{ce('crown')} <b>Шаг 2/4</b>\n"
+            f"{ce('crown')} <b>Шаг 2/5</b>\n"
             "Выбери организации для ханта.\n"
             "Облака и каталоги hunter проверит внутри организации."
         )
@@ -192,7 +195,7 @@ def _hunt_prefixes_text() -> str:
     return (
         f"{ce('bolt')} | <b>Запуск ханта</b> ▾\n\n"
         + quote(
-            f"{ce('eyes')} <b>Шаг 3/4</b>\n"
+            f"{ce('eyes')} <b>Шаг 3/5</b>\n"
             "Выбери один или несколько IP-префиксов.\n\n"
             f"{lines}"
         )
@@ -202,7 +205,21 @@ def _hunt_prefixes_text() -> str:
 def _hunt_target_text() -> str:
     return (
         f"{ce('bolt')} | <b>Запуск ханта</b> ▾\n\n"
-        + quote(f"{ce('diamond')} <b>Шаг 4/4</b>\nСколько IP нужно поймать на каждое облако?")
+        + quote(f"{ce('diamond')} <b>Шаг 4/5</b>\nСколько IP нужно поймать на каждое облако?")
+    )
+
+
+def _hunt_vm_config_text(config: VmHuntConfig) -> str:
+    return (
+        f"{ce('bolt')} | <b>Запуск ханта</b> ▾\n\n"
+        + quote(
+            f"{ce('diamond')} <b>Характеристики VM</b>\n"
+            f"Платформа: {_code(config.platform_label)}\n"
+            f"vCPU: {_code(str(config.cores) + ' vCPU')}\n"
+            f"RAM: {_code(str(config.memory_gb) + ' GB')}\n"
+            f"Диск: {_code(config.disk_type_label + ' ' + str(config.disk_size_gb) + ' GB')}\n"
+            f"Гарантированная доля CPU: {_code(str(config.core_fraction) + '%')}"
+        )
     )
 
 
@@ -249,6 +266,7 @@ def _hunt_confirm_text(data: dict) -> str:
         if item["id"] in selected_accounts
     ]
     selected_options = _selected_hunt_options(data)
+    vm_config = VmHuntConfig.from_dict(data.get("vm_config"))
     org_lines = "\n".join(
         f"- {escape(item['account_name'])} / {escape(item['organization_name'])}"
         for item in selected_options
@@ -263,7 +281,11 @@ def _hunt_confirm_text(data: dict) -> str:
         f"{ce('eyes')} <b>Префиксы:</b> {_code(', '.join(data.get('prefixes', [])))}\n"
         + _preflight_text(data)
         + "\n"
-        f"{ce('diamond')} <b>Цель:</b> {data.get('target_count')} IP на каждое облако"
+        f"{ce('diamond')} <b>Цель:</b> {data.get('target_count')} IP на каждое облако\n"
+        f"VM: {_code(vm_config.platform_label)}, {_code(str(vm_config.cores) + ' vCPU')}, "
+        f"{_code(str(vm_config.memory_gb) + ' GB RAM')}, "
+        f"{_code(vm_config.disk_type_label + ' ' + str(vm_config.disk_size_gb) + ' GB')}, "
+        f"{_code(str(vm_config.core_fraction) + '%')}"
     )
 
 
@@ -1102,6 +1124,19 @@ async def hunt_back_target(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data == "hunt:back:vm_config")
+async def hunt_back_vm_config(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    config = VmHuntConfig.from_dict(data.get("vm_config"))
+    await state.set_state(StartHuntFlow.vm_config)
+    await _safe_edit_text(
+        callback.message,
+        _hunt_vm_config_text(config),
+        reply_markup=hunt_vm_config_keyboard(config).as_markup(),
+    )
+    await callback.answer()
+
+
 @router.callback_query(StartHuntFlow.accounts, F.data.startswith("hunt:acc:"))
 async def hunt_toggle_account(callback: CallbackQuery, state: FSMContext) -> None:
     account_id = callback.data.split(":", maxsplit=2)[2]
@@ -1250,12 +1285,55 @@ async def hunt_prefixes_message_fallback(message: Message) -> None:
 async def hunt_target_selected(
     callback: CallbackQuery,
     state: FSMContext,
+) -> None:
+    await callback.answer()
+    target_count = int(callback.data.split(":", maxsplit=2)[2])
+    data = await state.get_data()
+    config = VmHuntConfig.from_dict(data.get("vm_config"))
+    await state.update_data(target_count=target_count, vm_config=config.to_dict())
+    await state.set_state(StartHuntFlow.vm_config)
+    await _safe_edit_text(
+        callback.message,
+        _hunt_vm_config_text(config),
+        reply_markup=hunt_vm_config_keyboard(config).as_markup(),
+    )
+
+
+@router.callback_query(StartHuntFlow.vm_config, F.data.startswith("hunt:vm:"))
+async def hunt_vm_config_selected(callback: CallbackQuery, state: FSMContext) -> None:
+    _, _, field, raw_value = callback.data.split(":", maxsplit=3)
+    data = await state.get_data()
+    config = VmHuntConfig.from_dict(data.get("vm_config")).to_dict()
+    if field == "platform":
+        config["platform_id"] = raw_value
+    elif field == "cores":
+        config["cores"] = int(raw_value)
+    elif field == "memory":
+        config["memory_gb"] = int(raw_value)
+    elif field == "disk_type":
+        config["disk_type_id"] = raw_value
+    elif field == "disk_size":
+        config["disk_size_gb"] = int(raw_value)
+    elif field == "fraction":
+        config["core_fraction"] = int(raw_value)
+    selected = VmHuntConfig.from_dict(config)
+    await state.update_data(vm_config=selected.to_dict())
+    await _safe_edit_text(
+        callback.message,
+        _hunt_vm_config_text(selected),
+        reply_markup=hunt_vm_config_keyboard(selected).as_markup(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(StartHuntFlow.vm_config, F.data == "hunt:vm_done")
+async def hunt_vm_config_done(
+    callback: CallbackQuery,
+    state: FSMContext,
     scheduler: HuntScheduler,
     bot_scope: BotRuntimeScope,
 ) -> None:
     await callback.answer()
-    target_count = int(callback.data.split(":", maxsplit=2)[2])
-    await state.update_data(target_count=target_count)
     data = await state.get_data()
     selected_options = _selected_hunt_options(data)
     if not selected_options:
@@ -1300,6 +1378,7 @@ async def hunt_start_execute(
 
     prefixes = data.get("prefixes", [])
     target_count = int(data.get("target_count", 1))
+    vm_config = VmHuntConfig.from_dict(data.get("vm_config"))
     selected_options = _selected_hunt_options(data)
 
     if not selected_options:
@@ -1329,6 +1408,7 @@ async def hunt_start_execute(
                 prefixes=prefixes,
                 target_count=target_count,
                 scopes=scopes,
+                vm_config=vm_config.to_dict(),
             )
         )
     except Exception as exc:  # noqa: BLE001
@@ -1344,7 +1424,9 @@ async def hunt_start_execute(
             f"{ce('crown')} Организаций: <b>{len(scopes)}</b>\n"
             f"{ce('key')} Аккаунтов: <b>{len({item.account_id for item in scopes})}</b>\n"
             f"{ce('eyes')} Префиксы: {_code(', '.join(prefixes))}\n"
-            f"{ce('diamond')} Цель: <b>{target_count}</b> IP на каждое облако"
+            f"{ce('diamond')} Цель: <b>{target_count}</b> IP на каждое облако\n"
+            f"VM: {_code(vm_config.platform_label)}, {_code(str(vm_config.cores) + ' vCPU')}, "
+            f"{_code(str(vm_config.memory_gb) + ' GB RAM')}"
         ),
         reply_markup=back_keyboard("menu:hunts").as_markup(),
     )

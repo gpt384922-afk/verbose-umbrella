@@ -10,6 +10,7 @@ from ycbot.bot.notifications import _match_text
 from ycbot.core.hunter import HunterEngine, ManagedCloud, ScopeDescriptor
 from ycbot.core.hunter import MatchNotification
 from ycbot.core.ssh_keys import generate_ssh_keypair
+from ycbot.core.vm_config import VmHuntConfig
 from ycbot.core.scheduler import HuntScheduler, HuntStartScope
 from ycbot.db.enums import CloudState as DbCloudState
 from ycbot.yc import Address
@@ -55,6 +56,14 @@ class ComputeApiTests(unittest.IsolatedAsyncioTestCase):
             image_id="image-1",
             ssh_username="user",
             ssh_public_key="ssh-ed25519 AAAA test",
+            vm_config=VmHuntConfig(
+                platform_id="standard-v3",
+                cores=4,
+                core_fraction=50,
+                memory_gb=2,
+                disk_type_id="network-ssd",
+                disk_size_gb=20,
+            ),
         )
 
         method, url, params, body, retries = client.requests[0]
@@ -64,18 +73,18 @@ class ComputeApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(retries)
         self.assertEqual("folder-1", body["folderId"])
         self.assertEqual("ru-central1-a", body["zoneId"])
-        self.assertEqual("standard-v4a", body["platformId"])
+        self.assertEqual("standard-v3", body["platformId"])
         self.assertEqual(
             {
-                "cores": "2",
-                "memory": str(1024**3),
-                "coreFraction": "20",
+                "cores": "4",
+                "memory": str(2 * 1024**3),
+                "coreFraction": "50",
             },
             body["resourcesSpec"],
         )
         self.assertTrue(body["bootDiskSpec"]["autoDelete"])
-        self.assertEqual("network-hdd", body["bootDiskSpec"]["diskSpec"]["typeId"])
-        self.assertEqual(str(10 * 1024**3), body["bootDiskSpec"]["diskSpec"]["size"])
+        self.assertEqual("network-ssd", body["bootDiskSpec"]["diskSpec"]["typeId"])
+        self.assertEqual(str(20 * 1024**3), body["bootDiskSpec"]["diskSpec"]["size"])
         self.assertEqual("image-1", body["bootDiskSpec"]["diskSpec"]["imageId"])
         self.assertEqual(
             [
@@ -219,6 +228,7 @@ class FakeVmBatchComputeApi:
         self.ips = ips
         self.created = []
         self.deleted = []
+        self.stopped = []
 
     async def get_latest_image_by_family(self, folder_id: str, family: str) -> str:
         return "image-1"
@@ -233,6 +243,7 @@ class FakeVmBatchComputeApi:
         image_id: str,
         ssh_username: str,
         ssh_public_key: str,
+        vm_config: VmHuntConfig,
     ) -> Instance:
         instance_id = f"vm-{len(self.created) + 1}"
         self.created.append(
@@ -245,9 +256,13 @@ class FakeVmBatchComputeApi:
                 "image_id": image_id,
                 "ssh_username": ssh_username,
                 "ssh_public_key": ssh_public_key,
+                "vm_config": vm_config,
             }
         )
         return Instance(id=instance_id, ip=None, zone_id=zone_id, name=name)
+
+    async def list_instances(self, folder_id: str) -> list[Instance]:
+        return []
 
     async def wait_for_external_ip(
         self,
@@ -260,6 +275,9 @@ class FakeVmBatchComputeApi:
 
     async def delete_instance(self, instance_id: str) -> None:
         self.deleted.append(instance_id)
+
+    async def stop_instance(self, instance_id: str) -> None:
+        self.stopped.append(instance_id)
 
 
 class FakeVmBatchVpcApi:
@@ -326,14 +344,16 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
             compute_api,
             FakeVmBatchVpcApi(),
             asyncio.Event(),
+            VmHuntConfig.default(),
         )
 
         self.assertTrue(matched)
         self.assertEqual(8, len(compute_api.created))
         self.assertEqual(
             ["vm-1", "vm-2", "vm-3", "vm-4", "vm-6", "vm-7", "vm-8"],
-            compute_api.deleted,
+            compute_api.stopped,
         )
+        self.assertEqual([], compute_api.deleted)
         hunter._accept_match.assert_awaited_once()
         kwargs = hunter._accept_match.await_args.kwargs
         self.assertEqual("vm:vm-5", kwargs["address_id"])
@@ -363,14 +383,16 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
             compute_api,
             FakeVmBatchVpcApi(),
             asyncio.Event(),
+            VmHuntConfig.default(),
         )
 
         self.assertFalse(matched)
         self.assertEqual(8, len(compute_api.created))
         self.assertEqual(
             ["vm-1", "vm-2", "vm-3", "vm-4", "vm-5", "vm-6", "vm-7", "vm-8"],
-            compute_api.deleted,
+            compute_api.stopped,
         )
+        self.assertEqual([], compute_api.deleted)
         hunter._accept_match.assert_not_awaited()
 
 
@@ -510,12 +532,12 @@ class CleanupRoutingTests(unittest.IsolatedAsyncioTestCase):
         scheduler._address_is_matched = AsyncMock(return_value=False)
         scheduler._mark_deleted = AsyncMock()
         vpc_api = SimpleNamespace(delete_address=AsyncMock())
-        compute_api = SimpleNamespace(delete_instance=AsyncMock())
+        compute_api = SimpleNamespace(stop_instance=AsyncMock())
 
         deleted = await scheduler._delete_tracked_resource("acc-1", "vm:vm-1", vpc_api, compute_api)
 
         self.assertTrue(deleted)
-        compute_api.delete_instance.assert_awaited_once_with("vm-1")
+        compute_api.stop_instance.assert_awaited_once_with("vm-1")
         vpc_api.delete_address.assert_not_awaited()
         scheduler._mark_deleted.assert_awaited_once_with("acc-1", "vm:vm-1")
 
@@ -531,11 +553,11 @@ class CleanupRoutingTests(unittest.IsolatedAsyncioTestCase):
         scheduler._address_is_matched = AsyncMock(return_value=False)
         scheduler._mark_deleted = AsyncMock()
         vpc_api = SimpleNamespace(delete_address=AsyncMock())
-        compute_api = SimpleNamespace(delete_instance=AsyncMock())
+        compute_api = SimpleNamespace(stop_instance=AsyncMock())
 
         deleted = await scheduler._delete_tracked_resource("acc-1", "addr-1", vpc_api, compute_api)
 
         self.assertTrue(deleted)
         vpc_api.delete_address.assert_awaited_once_with("addr-1")
-        compute_api.delete_instance.assert_not_awaited()
+        compute_api.stop_instance.assert_not_awaited()
         scheduler._mark_deleted.assert_awaited_once_with("acc-1", "addr-1")

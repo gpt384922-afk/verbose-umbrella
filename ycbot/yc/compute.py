@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ycbot.config import Settings
+from ycbot.core.vm_config import VmHuntConfig
 from ycbot.utils import log_event
 from ycbot.yc.client import YcApiError, YcClient
 
@@ -15,6 +16,7 @@ class Instance:
     ip: str | None
     zone_id: str | None = None
     name: str | None = None
+    status: str | None = None
 
 
 class ComputeApi:
@@ -52,7 +54,9 @@ class ComputeApi:
         image_id: str,
         ssh_username: str,
         ssh_public_key: str,
+        vm_config: VmHuntConfig | None = None,
     ) -> Instance:
+        config = vm_config or VmHuntConfig.from_settings(self.settings)
         metadata = {
             "ssh-keys": f"{ssh_username}:{ssh_public_key}",
             "user-data": self._cloud_init_user_data(ssh_username, ssh_public_key),
@@ -61,17 +65,17 @@ class ComputeApi:
             "folderId": folder_id,
             "name": name,
             "zoneId": zone_id,
-            "platformId": self.settings.hunt_vm_platform_id,
+            "platformId": config.platform_id,
             "resourcesSpec": {
-                "cores": str(self.settings.hunt_vm_cores),
-                "memory": str(self.settings.hunt_vm_memory_gb * 1024**3),
-                "coreFraction": str(self.settings.hunt_vm_core_fraction),
+                "cores": str(config.cores),
+                "memory": str(config.memory_gb * 1024**3),
+                "coreFraction": str(config.core_fraction),
             },
             "bootDiskSpec": {
                 "autoDelete": True,
                 "diskSpec": {
-                    "typeId": self.settings.hunt_vm_disk_type_id,
-                    "size": str(self.settings.hunt_vm_disk_size_gb * 1024**3),
+                    "typeId": config.disk_type_id,
+                    "size": str(config.disk_size_gb * 1024**3),
                     "imageId": image_id,
                 },
             },
@@ -101,6 +105,42 @@ class ComputeApi:
             ip=instance.ip,
         )
         return instance
+
+    async def start_instance(self, instance_id: str) -> None:
+        data = await self.client.request_json("POST", f"{self.settings.yc_compute_instance_url}/{instance_id}:start")
+        if data.get("id"):
+            await self.client.poll_operation(data["id"], timeout_seconds=240)
+        log_event(self.logger, "vm.started", instance_id=instance_id)
+
+    async def stop_instance(self, instance_id: str) -> None:
+        try:
+            data = await self.client.request_json("POST", f"{self.settings.yc_compute_instance_url}/{instance_id}:stop")
+        except YcApiError as exc:
+            if exc.status == 404:
+                return
+            raise
+        if data.get("id"):
+            await self.client.poll_operation(data["id"], timeout_seconds=240)
+        log_event(self.logger, "vm.stopped", instance_id=instance_id)
+
+    async def refresh_instance_dynamic_ip(
+        self,
+        instance_id: str,
+        *,
+        poll_seconds: int,
+        timeout_seconds: int,
+    ) -> Instance | None:
+        instance = await self.get_instance(instance_id)
+        if instance is None:
+            return None
+        if instance.status == "RUNNING":
+            await self.stop_instance(instance_id)
+        await self.start_instance(instance_id)
+        return await self.wait_for_external_ip(
+            instance_id,
+            poll_seconds=poll_seconds,
+            timeout_seconds=timeout_seconds,
+        )
 
     async def get_instance(self, instance_id: str) -> Instance | None:
         try:
@@ -163,6 +203,7 @@ class ComputeApi:
             ip=cls.extract_external_ip(payload),
             zone_id=payload.get("zoneId"),
             name=payload.get("name"),
+            status=payload.get("status"),
         )
 
     @staticmethod
