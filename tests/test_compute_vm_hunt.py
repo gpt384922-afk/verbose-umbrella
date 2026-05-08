@@ -549,6 +549,43 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
         lifecycle_calls = hunter.state.set_cloud_lifecycle.await_args_list
         self.assertEqual(("job-1", "cloud-1", CloudLifecycle.FAILED), lifecycle_calls[-1].args[:3])
 
+    async def test_vm_create_permission_denied_preserves_cloud(self) -> None:
+        permission_error = YcApiError(
+            status=403,
+            message="request failed",
+            payload='{"code":7,"message":"Permission denied to resource-manager.folder folder-1"}',
+        )
+        hunter = self._build_hunter()
+        hunter.state.set_cloud_lifecycle = AsyncMock()
+        hunter.state.increment_cloud_attempt = AsyncMock()
+        hunter.state.cloud_match_count = AsyncMock(return_value=0)
+        hunter._set_cloud_progress = AsyncMock()
+        hunter._store_address_created = AsyncMock()
+        hunter._store_address_deleted = AsyncMock()
+        hunter._store_address_failed = AsyncMock()
+        hunter._accept_match = AsyncMock(return_value=True)
+        hunter._matched_prefix = AsyncMock(return_value=None)
+        hunter._target_per_cloud = AsyncMock(return_value=1)
+        compute_api = FakeVmBatchComputeApi(
+            {},
+            create_errors={index: permission_error for index in range(1, 9)},
+            listed_instances=[],
+        )
+
+        matched = await hunter._hunt_cloud_once(
+            "job-1",
+            ScopeDescriptor(account_id="acc-1", organization_id="org-1"),
+            self._cloud(),
+            compute_api,
+            FakeVmBatchVpcApi(),
+            asyncio.Event(),
+            VmHuntConfig.default(),
+        )
+
+        self.assertTrue(matched)
+        self.assertEqual([], compute_api.deleted)
+        hunter.state.set_cloud_lifecycle.assert_any_await("job-1", "cloud-1", CloudLifecycle.SUCCESS)
+
 
 class HunterScopeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_scope_hunts_ready_clouds_concurrently(self) -> None:

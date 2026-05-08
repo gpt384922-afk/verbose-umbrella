@@ -704,6 +704,9 @@ class HunterEngine:
             await self._store_address_created(job_id, cloud, vm_record_id(result.id), result.ip)
 
         quota_errors = [error for error in create_errors if self._is_quota_error(error)]
+        permission_errors = [error for error in create_errors if self._is_folder_permission_error(error)]
+        if permission_errors:
+            raise PreserveCloudError("permission denied during vm create; cloud preserved")
         if quota_errors:
             if await self._cloud_has_public_ip(cloud, compute_api, vpc_api):
                 raise PreserveCloudError("quota error; cloud has public ip, preserved")
@@ -775,6 +778,16 @@ class HunterEngine:
         if isinstance(error, YcApiError) and error.status in {400, 403, 429, 500}:
             return any(token in text for token in tokens)
         return any(token in text for token in tokens)
+
+    @staticmethod
+    def _is_folder_permission_error(error: Exception) -> bool:
+        text = str(error).lower()
+        return (
+            isinstance(error, YcApiError)
+            and error.status == 403
+            and "permission denied" in text
+            and "resource-manager.folder" in text
+        )
 
     async def _cloud_has_public_ip(
         self,
