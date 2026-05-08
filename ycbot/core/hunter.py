@@ -16,10 +16,14 @@ from ycbot.db.enums import HuntCloudStatus, HuntStatus
 from ycbot.db.repositories import AccountRepository, AddressRepository, HuntRepository
 from ycbot.db.session import Database
 from ycbot.utils import log_error, log_event
-from ycbot.yc import Cloud, CloudsApi, ComputeApi, VpcApi, YcClient
+from ycbot.yc import Cloud, CloudsApi, ComputeApi, VpcApi, YcApiError, YcClient
 
 
 VM_RECORD_PREFIX = "vm:"
+
+
+class PreserveCloudError(RuntimeError):
+    pass
 
 
 def vm_record_id(instance_id: str) -> str:
@@ -269,7 +273,7 @@ class HunterEngine:
                         else:
                             matched = bool(result)
 
-                        if matched or stop_event.is_set() or await self._scope_targets_reached(job_id, scope):
+                        if matched or stop_event.is_set():
                             continue
                         hunt_state = await self.state.get_hunt(job_id)
                         cloud_state = hunt_state.cloud_states.get(cloud.cloud_id) if hunt_state else None
@@ -336,6 +340,7 @@ class HunterEngine:
         protected_slots = 0
         blocked_cloud_ids: set[str] = set()
         preexisting_cloud_ids: set[str] = set()
+        hunt_state = await self.state.get_hunt(job_id)
 
         # Cleanup and normalize cloud states before hunt start.
         for cloud in clouds:
@@ -408,6 +413,11 @@ class HunterEngine:
             )
             await self._upsert_cloud_row(managed)
             keep_clouds.append(managed)
+
+            cloud_state = hunt_state.cloud_states.get(managed.cloud_id) if hunt_state else None
+            if cloud_state and cloud_state.lifecycle == CloudLifecycle.SUCCESS:
+                preexisting_cloud_ids.add(managed.cloud_id)
+                continue
 
             if await self.state.cloud_match_count(job_id, managed.cloud_id):
                 preexisting_cloud_ids.add(managed.cloud_id)
@@ -567,6 +577,19 @@ class HunterEngine:
             )
         except asyncio.CancelledError:
             raise
+        except PreserveCloudError as exc:
+            log_event(self.logger, "cloud.preserved.quota_public_ip", cloud_id=cloud.cloud_id, reason=str(exc))
+            await self.state.set_cloud_lifecycle(job_id, cloud.cloud_id, CloudLifecycle.SUCCESS)
+            await self._set_cloud_progress(
+                job_id,
+                scope,
+                cloud.cloud_id,
+                HuntCloudStatus.COMPLETED,
+                1,
+                notes=str(exc),
+                completed=True,
+            )
+            return True
         except Exception as exc:  # noqa: BLE001
             log_error(self.logger, "vm.batch.error", exc, cloud_id=cloud.cloud_id)
             await self.state.set_cloud_lifecycle(job_id, cloud.cloud_id, CloudLifecycle.FAILED, error=str(exc))
@@ -605,14 +628,15 @@ class HunterEngine:
             )
             return True
 
-        await self.state.set_cloud_lifecycle(job_id, cloud.cloud_id, CloudLifecycle.IDLE)
+        await self.state.set_cloud_lifecycle(job_id, cloud.cloud_id, CloudLifecycle.FAILED, error="vm batch missed")
         await self._set_cloud_progress(
             job_id,
             scope,
             cloud.cloud_id,
-            HuntCloudStatus.RUNNING,
+            HuntCloudStatus.FAILED,
             1,
-            notes="vm batch missed; stopped for next ip cycle",
+            notes="vm batch missed",
+            error="vm batch missed",
         )
         return False
 
@@ -649,14 +673,8 @@ class HunterEngine:
         )
         batch_size = max(1, self.settings.hunt_vm_batch_size)
 
-        existing_instances = [
-            item
-            for item in await compute_api.list_instances(cloud.folder_id)
-            if (item.name or "").startswith("hunter-vm-")
-        ][:batch_size]
-
         create_tasks = []
-        for index in range(len(existing_instances), batch_size):
+        for index in range(batch_size):
             subnet = subnets[index % len(subnets)]
             name = self._next_vm_name(cloud.cloud_id, index)
             create_tasks.append(
@@ -675,39 +693,35 @@ class HunterEngine:
             )
 
         creation_results = await asyncio.gather(*create_tasks, return_exceptions=True)
-        instances = list(existing_instances)
+        create_errors: list[Exception] = []
+        instances = []
         for result in creation_results:
             if isinstance(result, Exception):
+                create_errors.append(result)
                 log_error(self.logger, "vm.create.error", result, cloud_id=cloud.cloud_id)
                 continue
             instances.append(result)
             await self._store_address_created(job_id, cloud, vm_record_id(result.id), result.ip)
 
+        quota_errors = [error for error in create_errors if self._is_quota_error(error)]
+        if quota_errors:
+            if await self._cloud_has_public_ip(cloud, compute_api, vpc_api):
+                raise PreserveCloudError("quota error; cloud has public ip, preserved")
+            raise RuntimeError("quota error and cloud has no public ip")
+
         if not instances:
             return False
 
-        poll_tasks = []
-        for instance in instances:
-            if instance.id in {item.id for item in existing_instances}:
-                poll_tasks.append(
-                    asyncio.create_task(
-                        compute_api.refresh_instance_dynamic_ip(
-                            instance.id,
-                            poll_seconds=self.settings.hunt_vm_poll_seconds,
-                            timeout_seconds=self.settings.hunt_vm_poll_timeout_seconds,
-                        )
-                    )
+        poll_tasks = [
+            asyncio.create_task(
+                compute_api.wait_for_external_ip(
+                    instance.id,
+                    poll_seconds=self.settings.hunt_vm_poll_seconds,
+                    timeout_seconds=self.settings.hunt_vm_poll_timeout_seconds,
                 )
-            else:
-                poll_tasks.append(
-                    asyncio.create_task(
-                        compute_api.wait_for_external_ip(
-                            instance.id,
-                            poll_seconds=self.settings.hunt_vm_poll_seconds,
-                            timeout_seconds=self.settings.hunt_vm_poll_timeout_seconds,
-                        )
-                    )
-                )
+            )
+            for instance in instances
+        ]
         poll_results = await asyncio.gather(*poll_tasks, return_exceptions=True)
 
         keep_instance_ids: set[str] = set()
@@ -740,17 +754,48 @@ class HunterEngine:
             if accepted:
                 keep_instance_ids.add(result.id)
 
-        stop_instances = [instance for instance in instances if instance.id not in keep_instance_ids]
-        stop_results = await asyncio.gather(
-            *(compute_api.stop_instance(instance.id) for instance in stop_instances),
+        delete_instances = [instance for instance in instances if instance.id not in keep_instance_ids]
+        delete_results = await asyncio.gather(
+            *(compute_api.delete_instance(instance.id) for instance in delete_instances),
             return_exceptions=True,
         )
-        for instance, result in zip(stop_instances, stop_results):
+        for instance, result in zip(delete_instances, delete_results):
             if isinstance(result, Exception):
-                log_error(self.logger, "vm.stop.error", result, instance_id=instance.id)
+                log_error(self.logger, "vm.delete.error", result, instance_id=instance.id)
                 await self._store_address_failed(scope.account_id, vm_record_id(instance.id))
+                continue
+            await self._store_address_deleted(scope.account_id, vm_record_id(instance.id))
 
         return bool(keep_instance_ids)
+
+    @staticmethod
+    def _is_quota_error(error: Exception) -> bool:
+        text = str(error).lower()
+        tokens = ("quota", "resource exhausted", "limit exceeded", '"code":8', '"code": 8', "code: 8")
+        if isinstance(error, YcApiError) and error.status in {400, 403, 429, 500}:
+            return any(token in text for token in tokens)
+        return any(token in text for token in tokens)
+
+    async def _cloud_has_public_ip(
+        self,
+        cloud: ManagedCloud,
+        compute_api: ComputeApi,
+        vpc_api: VpcApi,
+    ) -> bool:
+        try:
+            addresses = await vpc_api.list_addresses(cloud.folder_id)
+        except Exception as exc:  # noqa: BLE001
+            log_error(self.logger, "cloud.public_ip_check.addresses_error", exc, cloud_id=cloud.cloud_id)
+            return True
+        if any(address.ip for address in addresses):
+            return True
+
+        try:
+            instances = await compute_api.list_instances(cloud.folder_id)
+        except Exception as exc:  # noqa: BLE001
+            log_error(self.logger, "cloud.public_ip_check.instances_error", exc, cloud_id=cloud.cloud_id)
+            return True
+        return any(instance.ip for instance in instances)
 
     async def _delete_cloud_for_replacement(
         self,
