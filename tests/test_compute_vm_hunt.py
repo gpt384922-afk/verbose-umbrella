@@ -135,6 +135,60 @@ class VpcSubnetTests(unittest.IsolatedAsyncioTestCase):
             [(item.id, item.zone_id) for item in subnets],
         )
 
+    async def test_ensure_subnets_creates_network_and_missing_zone_subnets(self) -> None:
+        class Client:
+            def __init__(self):
+                self.posts = []
+
+            async def paginated(self, *, url, key, params=None):
+                if key == "subnets":
+                    return []
+                if key == "networks":
+                    return []
+                raise AssertionError(key)
+
+            async def request_json(self, method, url, *, params=None, body=None, retries=None):
+                self.posts.append((method, url, body))
+                if url.endswith("/networks"):
+                    return {"done": True, "response": {"id": "net-1", "name": body["name"]}}
+                if url.endswith("/subnets"):
+                    return {
+                        "done": True,
+                        "response": {
+                            "id": f"subnet-{body['zoneId'][-1]}",
+                            "zoneId": body["zoneId"],
+                            "networkId": body["networkId"],
+                        },
+                    }
+                raise AssertionError(url)
+
+        client = Client()
+        api = VpcApi(
+            client=client,
+            settings=SimpleNamespace(
+                yc_vpc_subnet_url="https://vpc.example/subnets",
+                yc_vpc_network_url="https://vpc.example/networks",
+            ),
+            logger=logging.getLogger("test"),
+        )
+
+        subnets = await api.ensure_subnets(
+            folder_id="folder-1",
+            zones=["ru-central1-a", "ru-central1-d"],
+            cidr_blocks=["10.10.0.0/24", "10.20.0.0/24"],
+        )
+
+        self.assertEqual(["ru-central1-a", "ru-central1-d"], [item.zone_id for item in subnets])
+        self.assertEqual("net-1", subnets[0].network_id)
+        self.assertEqual(
+            [
+                ("POST", "https://vpc.example/networks", "hunter-net-folder1"),
+                ("POST", "https://vpc.example/subnets", "hunter-subnet-a-folder1"),
+                ("POST", "https://vpc.example/subnets", "hunter-subnet-d-folder1"),
+            ],
+            [(method, url, body["name"]) for method, url, body in client.posts],
+        )
+
 
 class SshKeyTests(unittest.TestCase):
     def test_generate_ssh_keypair_returns_public_and_private_key(self) -> None:
@@ -145,6 +199,14 @@ class SshKeyTests(unittest.TestCase):
         self.assertIn("PRIVATE KEY", keypair.private_key)
         self.assertIn(keypair.public_key.strip(), keypair.metadata_value)
         self.assertTrue(keypair.metadata_value.startswith("user:ssh-"))
+
+    def test_generate_ssh_keypair_does_not_require_ssh_keygen_binary(self) -> None:
+        with patch("ycbot.core.ssh_keys.subprocess.run", side_effect=FileNotFoundError):
+            keypair = generate_ssh_keypair("user")
+
+        self.assertEqual("user", keypair.username)
+        self.assertTrue(keypair.public_key.startswith("ssh-ed25519 "))
+        self.assertIn("OPENSSH PRIVATE KEY", keypair.private_key)
 
 
 class FakeVmBatchComputeApi:
@@ -196,7 +258,7 @@ class FakeVmBatchComputeApi:
 
 
 class FakeVmBatchVpcApi:
-    async def list_subnets(self, folder_id: str):
+    async def ensure_subnets(self, *, folder_id: str, zones: list[str], cidr_blocks: list[str]):
         return [
             SimpleNamespace(id="subnet-a", zone_id="ru-central1-a"),
             SimpleNamespace(id="subnet-d", zone_id="ru-central1-d"),
@@ -216,6 +278,7 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
                 hunt_vm_username="user",
                 hunt_vm_poll_seconds=5,
                 hunt_vm_poll_timeout_seconds=30,
+                hunt_vm_subnet_cidr_blocks=["10.10.0.0/24", "10.20.0.0/24"],
             ),
             db=SimpleNamespace(),
             state=state,

@@ -570,11 +570,11 @@ class HunterEngine:
             return False
 
         allowed_zones = self.settings.hunt_vm_zones or ["ru-central1-a", "ru-central1-d"]
-        subnets = [
-            subnet
-            for subnet in await vpc_api.list_subnets(cloud.folder_id)
-            if subnet.zone_id in allowed_zones
-        ]
+        subnets = await vpc_api.ensure_subnets(
+            folder_id=cloud.folder_id,
+            zones=allowed_zones,
+            cidr_blocks=self.settings.hunt_vm_subnet_cidr_blocks,
+        )
         if not subnets:
             raise RuntimeError(f"no subnet in allowed VM zones: folder={cloud.folder_id}")
 

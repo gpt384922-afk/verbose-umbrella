@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import subprocess
-import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
 
 
 @dataclass(slots=True)
@@ -19,26 +20,16 @@ def generate_ssh_keypair(username: str) -> SshKeyPair:
     if not username:
         raise ValueError("ssh username must not be empty")
 
-    with tempfile.TemporaryDirectory(prefix="ychunter-ssh-") as tmpdir:
-        key_path = Path(tmpdir) / "id_ed25519"
-        subprocess.run(
-            [
-                "ssh-keygen",
-                "-t",
-                "ed25519",
-                "-N",
-                "",
-                "-C",
-                f"ychunter-{username}",
-                "-f",
-                str(key_path),
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        public_key = key_path.with_suffix(".pub").read_text(encoding="utf-8").strip()
-        private_key = key_path.read_text(encoding="utf-8")
+    private = ed25519.Ed25519PrivateKey.generate()
+    public_key = private.public_key().public_bytes(
+        encoding=serialization.Encoding.OpenSSH,
+        format=serialization.PublicFormat.OpenSSH,
+    ).decode("ascii")
+    private_key = private.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.OpenSSH,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("ascii")
 
     return SshKeyPair(
         username=username,

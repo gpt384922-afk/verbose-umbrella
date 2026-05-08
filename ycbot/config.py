@@ -59,6 +59,10 @@ class Settings(BaseSettings):
         default="https://vpc.api.cloud.yandex.net/vpc/v1/subnets",
         alias="YC_VPC_SUBNET_URL",
     )
+    yc_vpc_network_url: str = Field(
+        default="https://vpc.api.cloud.yandex.net/vpc/v1/networks",
+        alias="YC_VPC_NETWORK_URL",
+    )
     yc_compute_instance_url: str = Field(
         default="https://compute.api.cloud.yandex.net/compute/v1/instances",
         alias="YC_COMPUTE_INSTANCE_URL",
@@ -96,6 +100,10 @@ class Settings(BaseSettings):
     hunt_vm_poll_seconds: int = Field(default=5, alias="HUNT_VM_POLL_SECONDS")
     hunt_vm_poll_timeout_seconds: int = Field(default=180, alias="HUNT_VM_POLL_TIMEOUT_SECONDS")
     hunt_vm_zones_raw: str = Field(default="ru-central1-a,ru-central1-d", alias="HUNT_VM_ZONES")
+    hunt_vm_subnet_cidr_blocks_raw: str = Field(
+        default="10.10.0.0/24,10.20.0.0/24",
+        alias="HUNT_VM_SUBNET_CIDR_BLOCKS",
+    )
     hunt_vm_image_family: str = Field(default="ubuntu-2404-lts", alias="HUNT_VM_IMAGE_FAMILY")
     hunt_vm_image_folder_id: str = Field(default="standard-images", alias="HUNT_VM_IMAGE_FOLDER_ID")
     hunt_vm_platform_id: str = Field(default="standard-v4a", alias="HUNT_VM_PLATFORM_ID")
@@ -139,6 +147,10 @@ class Settings(BaseSettings):
     @property
     def hunt_vm_zones(self) -> list[str]:
         return _split_csv(self.hunt_vm_zones_raw)
+
+    @property
+    def hunt_vm_subnet_cidr_blocks(self) -> list[str]:
+        return _split_csv(self.hunt_vm_subnet_cidr_blocks_raw)
 
 
 def _split_csv(value: str) -> list[str]:

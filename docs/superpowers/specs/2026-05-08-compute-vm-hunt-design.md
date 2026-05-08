@@ -52,7 +52,7 @@ VM создаются с конфигурацией, соответствующ�
 
 Расширяем `VpcApi` read-only методом `list_subnets(folder_id)` и структурой `Subnet(id, zone_id)`, потому что Compute VM требует `subnetId`, а subnet должен совпадать с зоной VM.
 
-Если в folder нет subnet в `ru-central1-a` или `ru-central1-d`, облако считается непригодным для VM-ханта: бот помечает облако failed, удаляет его и создает замену. Создание сетей и subnet в этом дизайне не добавляем, чтобы не расширять blast radius.
+Если в folder нет subnet в `ru-central1-a` или `ru-central1-d`, бот создает управляемую VPC network и недостающие subnet'ы с CIDR из `HUNT_VM_SUBNET_CIDR_BLOCKS`. Если создание network/subnet не удалось, облако помечается failed и уходит в обычный путь удаления/замены.
 
 ## Изменения В Hunter
 
@@ -117,6 +117,7 @@ Cleanup должен быть консервативным:
 - `HUNT_VM_POLL_SECONDS=5`;
 - `HUNT_VM_POLL_TIMEOUT_SECONDS=180`;
 - `HUNT_VM_ZONES=ru-central1-a,ru-central1-d`;
+- `HUNT_VM_SUBNET_CIDR_BLOCKS=10.10.0.0/24,10.20.0.0/24`;
 - `HUNT_VM_IMAGE_FAMILY=ubuntu-2404-lts`;
 - `HUNT_VM_IMAGE_FOLDER_ID=standard-images`;
 - `HUNT_VM_PLATFORM_ID=standard-v4a`;
