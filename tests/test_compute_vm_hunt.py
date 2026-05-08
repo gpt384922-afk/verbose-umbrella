@@ -230,8 +230,10 @@ class FakeVmBatchComputeApi:
         self.created = []
         self.deleted = []
         self.stopped = []
-        self.stop_in_flight = 0
-        self.max_stop_in_flight = 0
+        self.delete_in_flight = 0
+        self.max_delete_in_flight = 0
+        self.list_instances_called = False
+        self.refresh_called = False
 
     async def get_latest_image_by_family(self, folder_id: str, family: str) -> str:
         return "image-1"
@@ -263,6 +265,204 @@ class FakeVmBatchComputeApi:
             }
         )
         return Instance(id=instance_id, ip=None, zone_id=zone_id, name=name)
+
+    async def list_instances(self, folder_id: str) -> list[Instance]:
+        self.list_instances_called = True
+        raise AssertionError("VM batch must not reuse existing instances")
+
+    async def refresh_instance_dynamic_ip(
+        self,
+        instance_id: str,
+        *,
+        poll_seconds: int,
+        timeout_seconds: int,
+    ) -> Instance | None:
+        self.refresh_called = True
+        raise AssertionError("VM batch must not start stopped instances")
+
+    async def wait_for_external_ip(
+        self,
+        instance_id: str,
+        *,
+        poll_seconds: int,
+        timeout_seconds: int,
+    ) -> Instance | None:
+        return Instance(id=instance_id, ip=self.ips.get(instance_id), zone_id="ru-central1-a")
+
+    async def delete_instance(self, instance_id: str) -> None:
+        self.delete_in_flight += 1
+        self.max_delete_in_flight = max(self.max_delete_in_flight, self.delete_in_flight)
+        await asyncio.sleep(0.01)
+        self.deleted.append(instance_id)
+        self.delete_in_flight -= 1
+
+    async def stop_instance(self, instance_id: str) -> None:
+        self.stopped.append(instance_id)
+
+
+class FakeVmBatchComputeApiWithExisting(FakeVmBatchComputeApi):
+    async def list_instances(self, folder_id: str) -> list[Instance]:
+        self.list_instances_called = True
+        return [Instance(id="existing-vm", ip=None, zone_id="ru-central1-a", name="hunter-vm-existing")]
+
+
+class FakeVmBatchVpcApi:
+    async def ensure_subnets(self, *, folder_id: str, zones: list[str], cidr_blocks: list[str]):
+        return [
+            SimpleNamespace(id="subnet-a", zone_id="ru-central1-a"),
+            SimpleNamespace(id="subnet-d", zone_id="ru-central1-d"),
+        ]
+
+
+class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
+    def _build_hunter(self) -> HunterEngine:
+        state = SimpleNamespace()
+        state.add_checked_ip = AsyncMock()
+        return HunterEngine(
+            settings=SimpleNamespace(
+                hunt_vm_batch_size=8,
+                hunt_vm_zones=["ru-central1-a", "ru-central1-d"],
+                hunt_vm_image_folder_id="standard-images",
+                hunt_vm_image_family="ubuntu-2404-lts",
+                hunt_vm_username="user",
+                hunt_vm_poll_seconds=5,
+                hunt_vm_poll_timeout_seconds=30,
+                hunt_vm_subnet_cidr_blocks=["10.10.0.0/24", "10.20.0.0/24"],
+            ),
+            db=SimpleNamespace(),
+            state=state,
+            semaphore=asyncio.Semaphore(8),
+            logger=logging.getLogger("test"),
+        )
+
+    @staticmethod
+    def _cloud() -> ManagedCloud:
+        return ManagedCloud(
+            account_id="acc-1",
+            organization_id="org-1",
+            cloud_id="cloud-1",
+            cloud_name="Cloud",
+            folder_id="folder-1",
+            billing_account_id="billing-1",
+        )
+
+    async def test_vm_batch_ignores_existing_stopped_vms_and_creates_fresh_batch(self) -> None:
+        hunter = self._build_hunter()
+        hunter._store_address_created = AsyncMock()
+        hunter._store_address_deleted = AsyncMock()
+        hunter._store_address_failed = AsyncMock()
+        hunter._accept_match = AsyncMock(return_value=True)
+        hunter._matched_prefix = AsyncMock(return_value=None)
+        hunter._target_per_cloud = AsyncMock(return_value=1)
+        compute_api = FakeVmBatchComputeApiWithExisting({f"vm-{index}": f"8.8.8.{index}" for index in range(1, 9)})
+
+        matched = await hunter._hunt_cloud_vm_batch(
+            "job-1",
+            ScopeDescriptor(account_id="acc-1", organization_id="org-1"),
+            self._cloud(),
+            compute_api,
+            FakeVmBatchVpcApi(),
+            asyncio.Event(),
+            VmHuntConfig.default(),
+        )
+
+        self.assertFalse(matched)
+        self.assertFalse(compute_api.list_instances_called)
+        self.assertFalse(compute_api.refresh_called)
+        self.assertEqual(8, len(compute_api.created))
+        self.assertNotIn("existing-vm", compute_api.deleted)
+        self.assertEqual(
+            ["vm-1", "vm-2", "vm-3", "vm-4", "vm-5", "vm-6", "vm-7", "vm-8"],
+            compute_api.deleted,
+        )
+        self.assertEqual([], compute_api.stopped)
+
+    async def test_vm_batch_deletes_misses_and_keeps_matched_vm(self) -> None:
+        hunter = self._build_hunter()
+        hunter._store_address_created = AsyncMock()
+        hunter._store_address_deleted = AsyncMock()
+        hunter._store_address_failed = AsyncMock()
+        hunter._accept_match = AsyncMock(return_value=True)
+        hunter._matched_prefix = AsyncMock(
+            side_effect=lambda job_id, ip: "84.201" if ip.startswith("84.201.") else None
+        )
+        hunter._target_per_cloud = AsyncMock(return_value=1)
+        compute_api = FakeVmBatchComputeApi(
+            {
+                **{f"vm-{index}": f"8.8.8.{index}" for index in range(1, 9)},
+                "vm-5": "84.201.10.20",
+            }
+        )
+
+        matched = await hunter._hunt_cloud_vm_batch(
+            "job-1",
+            ScopeDescriptor(account_id="acc-1", organization_id="org-1"),
+            self._cloud(),
+            compute_api,
+            FakeVmBatchVpcApi(),
+            asyncio.Event(),
+            VmHuntConfig.default(),
+        )
+
+        self.assertTrue(matched)
+        self.assertEqual(8, len(compute_api.created))
+        self.assertEqual(
+            ["vm-1", "vm-2", "vm-3", "vm-4", "vm-6", "vm-7", "vm-8"],
+            compute_api.deleted,
+        )
+        self.assertEqual([], compute_api.stopped)
+        self.assertGreater(compute_api.max_delete_in_flight, 1)
+        hunter._accept_match.assert_awaited_once()
+        kwargs = hunter._accept_match.await_args.kwargs
+        self.assertEqual("vm:vm-5", kwargs["address_id"])
+        self.assertEqual("84.201.10.20", kwargs["ip"])
+        self.assertEqual("84.201", kwargs["prefix"])
+        self.assertEqual("vm-5", kwargs["resource_id"])
+        self.assertEqual("vm", kwargs["resource_type"])
+        self.assertEqual("user", kwargs["ssh_username"])
+        self.assertTrue(kwargs["ssh_public_key"].startswith("ssh-ed25519 "))
+        self.assertIn("PRIVATE KEY", kwargs["ssh_private_key"])
+        self.assertEqual("ru-central1-a", kwargs["zone_id"])
+
+    async def test_vm_batch_deletes_all_vms_when_all_ips_miss(self) -> None:
+        hunter = self._build_hunter()
+        hunter._store_address_created = AsyncMock()
+        hunter._store_address_deleted = AsyncMock()
+        hunter._store_address_failed = AsyncMock()
+        hunter._accept_match = AsyncMock(return_value=True)
+        hunter._matched_prefix = AsyncMock(return_value=None)
+        hunter._target_per_cloud = AsyncMock(return_value=1)
+        compute_api = FakeVmBatchComputeApi({f"vm-{index}": f"8.8.8.{index}" for index in range(1, 9)})
+
+        matched = await hunter._hunt_cloud_vm_batch(
+            "job-1",
+            ScopeDescriptor(account_id="acc-1", organization_id="org-1"),
+            self._cloud(),
+            compute_api,
+            FakeVmBatchVpcApi(),
+            asyncio.Event(),
+            VmHuntConfig.default(),
+        )
+
+        self.assertFalse(matched)
+        self.assertEqual(8, len(compute_api.created))
+        self.assertEqual(
+            ["vm-1", "vm-2", "vm-3", "vm-4", "vm-5", "vm-6", "vm-7", "vm-8"],
+            compute_api.deleted,
+        )
+        self.assertEqual([], compute_api.stopped)
+        self.assertGreater(compute_api.max_delete_in_flight, 1)
+        hunter._accept_match.assert_not_awaited()
+
+
+class OldFakeVmBatchComputeApi:
+    def __init__(self, ips: dict[str, str | None]):
+        self.ips = ips
+        self.created = []
+        self.deleted = []
+        self.stopped = []
+        self.stop_in_flight = 0
+        self.max_stop_in_flight = 0
 
     async def list_instances(self, folder_id: str) -> list[Instance]:
         return []
