@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -734,13 +735,13 @@ class HunterEngine:
 
         keep_instance_ids: set[str] = set()
         target = max(1, await self._target_per_cloud(job_id))
-        for result in poll_results:
-            if isinstance(result, Exception) or result is None or not result.ip:
+        for poll_result in poll_results:
+            if isinstance(poll_result, Exception) or poll_result is None or not poll_result.ip:
                 continue
 
-            await self._store_address_created(job_id, cloud, vm_record_id(result.id), result.ip)
-            await self.state.add_checked_ip(job_id, cloud.cloud_id, result.ip)
-            prefix = await self._matched_prefix(job_id, result.ip)
+            await self._store_address_created(job_id, cloud, vm_record_id(poll_result.id), poll_result.ip)
+            await self.state.add_checked_ip(job_id, cloud.cloud_id, poll_result.ip)
+            prefix = await self._matched_prefix(job_id, poll_result.ip)
             if not prefix or len(keep_instance_ids) >= target:
                 continue
 
@@ -748,19 +749,19 @@ class HunterEngine:
                 job_id,
                 scope,
                 cloud,
-                address_id=vm_record_id(result.id),
-                ip=result.ip,
+                address_id=vm_record_id(poll_result.id),
+                ip=poll_result.ip,
                 prefix=prefix,
                 preexisting=False,
-                resource_id=result.id,
+                resource_id=poll_result.id,
                 resource_type="vm",
                 ssh_username=keypair.username,
                 ssh_public_key=keypair.public_key,
                 ssh_private_key=keypair.private_key,
-                zone_id=result.zone_id,
+                zone_id=poll_result.zone_id,
             )
             if accepted:
-                keep_instance_ids.add(result.id)
+                keep_instance_ids.add(poll_result.id)
 
         delete_instances = [instance for instance in instances if instance.id not in keep_instance_ids]
         for i, instance in enumerate(delete_instances):
@@ -1375,4 +1376,4 @@ class HunterEngine:
     @staticmethod
     def _next_vm_name(cloud_id: str, index: int) -> str:
         suffix = re.sub(r"[^a-z0-9]", "", cloud_id.lower())[-8:] or "cloud"
-        return f"ycbot-vm-{suffix}-{index + 1:02d}"
+        return f"ycbot-vm-{suffix}-{index + 1:02d}-{int(time.time())}"
