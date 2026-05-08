@@ -692,34 +692,29 @@ class HunterEngine:
         )
         batch_size = max(1, self.settings.hunt_vm_batch_size)
 
-        create_tasks = []
+        instances = []
+        create_errors: list[Exception] = []
         for index in range(batch_size):
             subnet = subnets[index % len(subnets)]
             name = self._next_vm_name(cloud.cloud_id, index)
-            create_tasks.append(
-                asyncio.create_task(
-                    compute_api.create_instance(
-                        folder_id=cloud.folder_id,
-                        name=name,
-                        zone_id=subnet.zone_id,
-                        subnet_id=subnet.id,
-                        image_id=image_id,
-                        ssh_username=keypair.username,
-                        ssh_public_key=keypair.public_key,
-                        vm_config=vm_config,
-                    )
+            try:
+                instance = await compute_api.create_instance(
+                    folder_id=cloud.folder_id,
+                    name=name,
+                    zone_id=subnet.zone_id,
+                    subnet_id=subnet.id,
+                    image_id=image_id,
+                    ssh_username=keypair.username,
+                    ssh_public_key=keypair.public_key,
+                    vm_config=vm_config,
                 )
-            )
-
-        creation_results = await asyncio.gather(*create_tasks, return_exceptions=True)
-        create_errors: list[Exception] = []
-        instances = []
-        for result in creation_results:
-            if isinstance(result, Exception):
-                create_errors.append(result)
-                log_error(self.logger, "vm.create.error", result, cloud_id=cloud.cloud_id)
-                continue
-            instances.append(result)
+                instances.append(instance)
+            except Exception as exc:
+                create_errors.append(exc)
+                log_error(self.logger, "vm.create.error", exc, cloud_id=cloud.cloud_id)
+            # Add delay between creations to be more gentle
+            if index < batch_size - 1:
+                await asyncio.sleep(1.0)
             await self._store_address_created(job_id, cloud, vm_record_id(result.id), result.ip)
 
         quota_errors = [error for error in create_errors if self._is_quota_error(error)]
@@ -777,13 +772,14 @@ class HunterEngine:
                 keep_instance_ids.add(result.id)
 
         delete_instances = [instance for instance in instances if instance.id not in keep_instance_ids]
-        delete_results = await asyncio.gather(
-            *(compute_api.delete_instance(instance.id) for instance in delete_instances),
-            return_exceptions=True,
-        )
-        for instance, result in zip(delete_instances, delete_results):
-            if isinstance(result, Exception):
-                log_error(self.logger, "vm.delete.error", result, instance_id=instance.id)
+        for i, instance in enumerate(delete_instances):
+            try:
+                await compute_api.delete_instance(instance.id)
+            except Exception as exc:
+                log_error(self.logger, "vm.delete.error", exc, instance_id=instance.id)
+            # Add delay between deletions to be more gentle
+            if i < len(delete_instances) - 1:
+                await asyncio.sleep(1.0)
                 await self._store_address_failed(scope.account_id, vm_record_id(instance.id))
                 continue
             await self._store_address_deleted(scope.account_id, vm_record_id(instance.id))

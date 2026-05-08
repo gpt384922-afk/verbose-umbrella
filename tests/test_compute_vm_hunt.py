@@ -444,11 +444,11 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(matched)
         self.assertEqual(8, len(compute_api.created))
         self.assertEqual(
-            ["vm-1", "vm-2", "vm-3", "vm-4", "vm-6", "vm-7", "vm-8"],
+            ["vm-2", "vm-3", "vm-4", "vm-6", "vm-7", "vm-8"],
             compute_api.deleted,
         )
         self.assertEqual([], compute_api.stopped)
-        self.assertGreater(compute_api.max_delete_in_flight, 1)
+        self.assertEqual(1, compute_api.max_delete_in_flight)
         hunter._accept_match.assert_awaited_once()
         kwargs = hunter._accept_match.await_args.kwargs
         self.assertEqual("vm:vm-5", kwargs["address_id"])
@@ -488,7 +488,7 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
             compute_api.deleted,
         )
         self.assertEqual([], compute_api.stopped)
-        self.assertGreater(compute_api.max_delete_in_flight, 1)
+        self.assertEqual(1, compute_api.max_delete_in_flight)
         hunter._accept_match.assert_not_awaited()
 
     async def test_quota_error_preserves_cloud_when_existing_vm_has_public_ip(self) -> None:
