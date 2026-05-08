@@ -611,16 +611,7 @@ class HunterEngine:
             return True
         except Exception as exc:  # noqa: BLE001
             log_error(self.logger, "vm.batch.error", exc, cloud_id=cloud.cloud_id)
-            await self.state.set_cloud_lifecycle(job_id, cloud.cloud_id, CloudLifecycle.FAILED, error=str(exc))
-            await self._set_cloud_progress(
-                job_id,
-                scope,
-                cloud.cloud_id,
-                HuntCloudStatus.FAILED,
-                1,
-                notes="vm batch failed",
-                error=str(exc),
-            )
+            # Don't mark as FAILED to avoid deleting the cloud on errors
             return False
         if stop_event.is_set():
             return matched
