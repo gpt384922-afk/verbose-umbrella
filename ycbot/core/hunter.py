@@ -769,7 +769,7 @@ class HunterEngine:
                 zone_id=result.zone_id,
             )
             if accepted:
-                keep_instance_ids.add(result.id)
+                pass  # Always delete VMs, but mark as matched
 
         delete_instances = [instance for instance in instances if instance.id not in keep_instance_ids]
         for i, instance in enumerate(delete_instances):
@@ -1374,14 +1374,14 @@ class HunterEngine:
         suffix = re.sub(r"[^a-z0-9]", "", organization_id.lower())[-6:] or "org"
         seq = max(1, salt + 1)
         for _ in range(300):
-            candidate = f"hunter-{suffix}-{seq:03d}"
+            candidate = f"ycbot-{suffix}-{seq:03d}"
             if candidate not in existing_names:
                 return candidate
             seq += 1
         ts = int(datetime.now(tz=timezone.utc).timestamp())
-        return f"hunter-{suffix}-{ts}"
+        return f"ycbot-{suffix}-{ts}"
 
     @staticmethod
     def _next_vm_name(cloud_id: str, index: int) -> str:
         suffix = re.sub(r"[^a-z0-9]", "", cloud_id.lower())[-8:] or "cloud"
-        return f"hunter-vm-{suffix}-{index + 1:02d}"
+        return f"ycbot-vm-{suffix}-{index + 1:02d}"

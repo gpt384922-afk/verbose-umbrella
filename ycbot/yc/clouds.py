@@ -108,8 +108,8 @@ class CloudsApi:
         payload = {
             "organizationId": organization_id,
             "name": name,
-            "labels": {"managed_by": "ychunter"},
-            "description": "Managed by YC Hunter",
+            "labels": {"managed_by": "ycbot"},
+            "description": "Managed by YCBot",
         }
         data = await self.client.request_json("POST", self.settings.yc_cloud_url, body=payload)
         response = await self._resolve_operation(data)
@@ -403,13 +403,13 @@ class CloudsApi:
             return folders[0]
 
         suffix = re.sub(r"[^a-z0-9]", "", cloud_id.lower())[-6:] or "cloud"
-        folder_name = f"hunter-folder-{suffix}"
+        folder_name = f"ycbot-folder-{suffix}"
         log_event(self.logger, "folder.missing", cloud_id=cloud_id, folder_name=folder_name)
         payload = {
             "cloudId": cloud_id,
             "name": folder_name,
-            "labels": {"managed_by": "ychunter"},
-            "description": "Managed by YC Hunter",
+            "labels": {"managed_by": "ycbot"},
+            "description": "Managed by YCBot",
         }
         data = await self.client.request_json("POST", self.settings.yc_folder_url, body=payload)
         response = await self._resolve_operation(data)

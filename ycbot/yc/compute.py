@@ -91,7 +91,7 @@ class ComputeApi:
             ],
             "schedulingPolicy": {"preemptible": False},
             "metadata": metadata,
-            "labels": {"managed_by": "ychunter"},
+            "labels": {"managed_by": "ycbot"},
         }
         data = await self.client.request_json("POST", self.settings.yc_compute_instance_url, body=payload)
         response = await self._resolve_operation(data)

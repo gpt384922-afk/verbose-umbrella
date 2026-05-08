@@ -132,7 +132,7 @@ class VpcApi:
             if networks:
                 network_id = networks[0].id
             else:
-                network_id = (await self.create_network(folder_id, self._resource_name("hunter-net", folder_id))).id
+                network_id = (await self.create_network(folder_id, self._resource_name("ycbot-net", folder_id))).id
 
         for zone in missing_zones:
             zone_index = zones.index(zone)
@@ -140,7 +140,7 @@ class VpcApi:
                 folder_id=folder_id,
                 network_id=network_id,
                 zone_id=zone,
-                name=self._resource_name(f"hunter-subnet-{zone[-1]}", folder_id),
+                name=self._resource_name(f"ycbot-subnet-{zone[-1]}", folder_id),
                 cidr_block=self._cidr_for_zone(cidr_blocks, zone_index),
             )
             by_zone[zone] = subnet

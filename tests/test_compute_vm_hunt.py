@@ -215,9 +215,9 @@ class VpcSubnetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("net-1", subnets[0].network_id)
         self.assertEqual(
             [
-                ("POST", "https://vpc.example/networks", "hunter-net-folder1"),
-                ("POST", "https://vpc.example/subnets", "hunter-subnet-a-folder1"),
-                ("POST", "https://vpc.example/subnets", "hunter-subnet-d-folder1"),
+                ("POST", "https://vpc.example/networks", "ycbot-net-folder1"),
+                ("POST", "https://vpc.example/subnets", "ycbot-subnet-a-folder1"),
+                ("POST", "https://vpc.example/subnets", "ycbot-subnet-d-folder1"),
             ],
             [(method, url, body["name"]) for method, url, body in client.posts],
         )
@@ -444,7 +444,7 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(matched)
         self.assertEqual(8, len(compute_api.created))
         self.assertEqual(
-            ["vm-2", "vm-3", "vm-4", "vm-6", "vm-7", "vm-8"],
+            ["vm-2", "vm-3", "vm-4", "vm-5", "vm-6", "vm-7", "vm-8"],
             compute_api.deleted,
         )
         self.assertEqual([], compute_api.stopped)
