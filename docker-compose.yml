@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ychunter
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ychunter"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  ycbot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_DSN: postgresql+asyncpg://postgres:postgres@postgres:5432/ychunter
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

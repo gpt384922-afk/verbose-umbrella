@@ -1,0 +1,470 @@
+from __future__ import annotations
+
+import logging
+import asyncio
+import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+from ycbot.bot.notifications import _match_text
+from ycbot.core.hunter import HunterEngine, ManagedCloud, ScopeDescriptor
+from ycbot.core.hunter import MatchNotification
+from ycbot.core.ssh_keys import generate_ssh_keypair
+from ycbot.core.scheduler import HuntScheduler, HuntStartScope
+from ycbot.db.enums import CloudState as DbCloudState
+from ycbot.yc import Address
+from ycbot.yc.compute import ComputeApi, Instance
+from ycbot.yc.vpc import VpcApi
+
+
+class FakeComputeClient:
+    def __init__(self):
+        self.requests = []
+
+    async def request_json(self, method, url, *, params=None, body=None, retries=None):
+        self.requests.append((method, url, params, body, retries))
+        return {"done": True, "response": {"id": "vm-1", "networkInterfaces": []}}
+
+    async def poll_operation(self, operation_id, *, timeout_seconds=240, min_delay=1.0, max_delay=2.5):
+        return {"done": True, "response": {"id": "vm-1"}}
+
+
+class ComputeApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_create_instance_payload_matches_vm_hunt_config(self) -> None:
+        client = FakeComputeClient()
+        api = ComputeApi(
+            client=client,
+            settings=SimpleNamespace(
+                yc_compute_instance_url="https://compute.example/instances",
+                yc_compute_image_url="https://compute.example/images",
+                hunt_vm_platform_id="standard-v4a",
+                hunt_vm_disk_type_id="network-hdd",
+                hunt_vm_disk_size_gb=10,
+                hunt_vm_cores=2,
+                hunt_vm_core_fraction=20,
+                hunt_vm_memory_gb=1,
+            ),
+            logger=logging.getLogger("test"),
+        )
+
+        await api.create_instance(
+            folder_id="folder-1",
+            name="hunter-vm-1",
+            zone_id="ru-central1-a",
+            subnet_id="subnet-a",
+            image_id="image-1",
+            ssh_username="user",
+            ssh_public_key="ssh-ed25519 AAAA test",
+        )
+
+        method, url, params, body, retries = client.requests[0]
+        self.assertEqual("POST", method)
+        self.assertEqual("https://compute.example/instances", url)
+        self.assertIsNone(params)
+        self.assertIsNone(retries)
+        self.assertEqual("folder-1", body["folderId"])
+        self.assertEqual("ru-central1-a", body["zoneId"])
+        self.assertEqual("standard-v4a", body["platformId"])
+        self.assertEqual(
+            {
+                "cores": "2",
+                "memory": str(1024**3),
+                "coreFraction": "20",
+            },
+            body["resourcesSpec"],
+        )
+        self.assertTrue(body["bootDiskSpec"]["autoDelete"])
+        self.assertEqual("network-hdd", body["bootDiskSpec"]["diskSpec"]["typeId"])
+        self.assertEqual(str(10 * 1024**3), body["bootDiskSpec"]["diskSpec"]["size"])
+        self.assertEqual("image-1", body["bootDiskSpec"]["diskSpec"]["imageId"])
+        self.assertEqual(
+            [
+                {
+                    "subnetId": "subnet-a",
+                    "primaryV4AddressSpec": {"oneToOneNatSpec": {"ipVersion": "IPV4"}},
+                }
+            ],
+            body["networkInterfaceSpecs"],
+        )
+        self.assertEqual({"preemptible": True}, body["schedulingPolicy"])
+        self.assertEqual({"ssh-keys": "user:ssh-ed25519 AAAA test"}, body["metadata"])
+
+    def test_extract_external_ip_reads_one_to_one_nat(self) -> None:
+        ip = ComputeApi.extract_external_ip(
+            {
+                "networkInterfaces": [
+                    {
+                        "primaryV4Address": {
+                            "oneToOneNat": {"address": "84.201.10.20"},
+                        }
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual("84.201.10.20", ip)
+
+
+class VpcSubnetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_list_subnets_returns_id_and_zone(self) -> None:
+        test_case = self
+
+        class Client:
+            async def paginated(self, *, url, key, params=None):
+                test_case.assertEqual("https://vpc.example/subnets", url)
+                test_case.assertEqual("subnets", key)
+                test_case.assertEqual({"folderId": "folder-1"}, params)
+                return [
+                    {"id": "subnet-a", "zoneId": "ru-central1-a"},
+                    {"id": "subnet-d", "zoneId": "ru-central1-d"},
+                ]
+
+        api = VpcApi(
+            client=Client(),
+            settings=SimpleNamespace(yc_vpc_subnet_url="https://vpc.example/subnets"),
+            logger=logging.getLogger("test"),
+        )
+
+        subnets = await api.list_subnets("folder-1")
+
+        self.assertEqual(
+            [
+                ("subnet-a", "ru-central1-a"),
+                ("subnet-d", "ru-central1-d"),
+            ],
+            [(item.id, item.zone_id) for item in subnets],
+        )
+
+
+class SshKeyTests(unittest.TestCase):
+    def test_generate_ssh_keypair_returns_public_and_private_key(self) -> None:
+        keypair = generate_ssh_keypair("user")
+
+        self.assertEqual("user", keypair.username)
+        self.assertTrue(keypair.public_key.startswith("ssh-"))
+        self.assertIn("PRIVATE KEY", keypair.private_key)
+        self.assertIn(keypair.public_key.strip(), keypair.metadata_value)
+        self.assertTrue(keypair.metadata_value.startswith("user:ssh-"))
+
+
+class FakeVmBatchComputeApi:
+    def __init__(self, ips: dict[str, str | None]):
+        self.ips = ips
+        self.created = []
+        self.deleted = []
+
+    async def get_latest_image_by_family(self, folder_id: str, family: str) -> str:
+        return "image-1"
+
+    async def create_instance(
+        self,
+        *,
+        folder_id: str,
+        name: str,
+        zone_id: str,
+        subnet_id: str,
+        image_id: str,
+        ssh_username: str,
+        ssh_public_key: str,
+    ) -> Instance:
+        instance_id = f"vm-{len(self.created) + 1}"
+        self.created.append(
+            {
+                "instance_id": instance_id,
+                "folder_id": folder_id,
+                "name": name,
+                "zone_id": zone_id,
+                "subnet_id": subnet_id,
+                "image_id": image_id,
+                "ssh_username": ssh_username,
+                "ssh_public_key": ssh_public_key,
+            }
+        )
+        return Instance(id=instance_id, ip=None, zone_id=zone_id, name=name)
+
+    async def wait_for_external_ip(
+        self,
+        instance_id: str,
+        *,
+        poll_seconds: int,
+        timeout_seconds: int,
+    ) -> Instance | None:
+        return Instance(id=instance_id, ip=self.ips.get(instance_id), zone_id="ru-central1-a")
+
+    async def delete_instance(self, instance_id: str) -> None:
+        self.deleted.append(instance_id)
+
+
+class FakeVmBatchVpcApi:
+    async def list_subnets(self, folder_id: str):
+        return [
+            SimpleNamespace(id="subnet-a", zone_id="ru-central1-a"),
+            SimpleNamespace(id="subnet-d", zone_id="ru-central1-d"),
+        ]
+
+
+class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
+    def _build_hunter(self) -> HunterEngine:
+        state = SimpleNamespace()
+        state.add_checked_ip = AsyncMock()
+        return HunterEngine(
+            settings=SimpleNamespace(
+                hunt_vm_batch_size=8,
+                hunt_vm_zones=["ru-central1-a", "ru-central1-d"],
+                hunt_vm_image_folder_id="standard-images",
+                hunt_vm_image_family="ubuntu-2404-lts",
+                hunt_vm_username="user",
+                hunt_vm_poll_seconds=5,
+                hunt_vm_poll_timeout_seconds=30,
+            ),
+            db=SimpleNamespace(),
+            state=state,
+            semaphore=asyncio.Semaphore(8),
+            logger=logging.getLogger("test"),
+        )
+
+    @staticmethod
+    def _cloud() -> ManagedCloud:
+        return ManagedCloud(
+            account_id="acc-1",
+            organization_id="org-1",
+            cloud_id="cloud-1",
+            cloud_name="Cloud",
+            folder_id="folder-1",
+            billing_account_id="billing-1",
+        )
+
+    async def test_vm_batch_deletes_misses_and_keeps_matched_vm(self) -> None:
+        hunter = self._build_hunter()
+        hunter._store_address_created = AsyncMock()
+        hunter._store_address_deleted = AsyncMock()
+        hunter._store_address_failed = AsyncMock()
+        hunter._accept_match = AsyncMock(return_value=True)
+        hunter._matched_prefix = AsyncMock(
+            side_effect=lambda job_id, ip: "84.201" if ip.startswith("84.201.") else None
+        )
+        hunter._target_per_cloud = AsyncMock(return_value=1)
+        compute_api = FakeVmBatchComputeApi(
+            {
+                **{f"vm-{index}": f"8.8.8.{index}" for index in range(1, 9)},
+                "vm-5": "84.201.10.20",
+            }
+        )
+
+        matched = await hunter._hunt_cloud_vm_batch(
+            "job-1",
+            ScopeDescriptor(account_id="acc-1", organization_id="org-1"),
+            self._cloud(),
+            compute_api,
+            FakeVmBatchVpcApi(),
+            asyncio.Event(),
+        )
+
+        self.assertTrue(matched)
+        self.assertEqual(8, len(compute_api.created))
+        self.assertEqual(
+            ["vm-1", "vm-2", "vm-3", "vm-4", "vm-6", "vm-7", "vm-8"],
+            compute_api.deleted,
+        )
+        hunter._accept_match.assert_awaited_once()
+        kwargs = hunter._accept_match.await_args.kwargs
+        self.assertEqual("vm:vm-5", kwargs["address_id"])
+        self.assertEqual("84.201.10.20", kwargs["ip"])
+        self.assertEqual("84.201", kwargs["prefix"])
+        self.assertEqual("vm-5", kwargs["resource_id"])
+        self.assertEqual("vm", kwargs["resource_type"])
+        self.assertEqual("user", kwargs["ssh_username"])
+        self.assertIn("PRIVATE KEY", kwargs["ssh_private_key"])
+        self.assertEqual("ru-central1-a", kwargs["zone_id"])
+
+    async def test_vm_batch_deletes_all_vms_when_all_ips_miss(self) -> None:
+        hunter = self._build_hunter()
+        hunter._store_address_created = AsyncMock()
+        hunter._store_address_deleted = AsyncMock()
+        hunter._store_address_failed = AsyncMock()
+        hunter._accept_match = AsyncMock(return_value=True)
+        hunter._matched_prefix = AsyncMock(return_value=None)
+        hunter._target_per_cloud = AsyncMock(return_value=1)
+        compute_api = FakeVmBatchComputeApi({f"vm-{index}": f"8.8.8.{index}" for index in range(1, 9)})
+
+        matched = await hunter._hunt_cloud_vm_batch(
+            "job-1",
+            ScopeDescriptor(account_id="acc-1", organization_id="org-1"),
+            self._cloud(),
+            compute_api,
+            FakeVmBatchVpcApi(),
+            asyncio.Event(),
+        )
+
+        self.assertFalse(matched)
+        self.assertEqual(8, len(compute_api.created))
+        self.assertEqual(
+            ["vm-1", "vm-2", "vm-3", "vm-4", "vm-5", "vm-6", "vm-7", "vm-8"],
+            compute_api.deleted,
+        )
+        hunter._accept_match.assert_not_awaited()
+
+
+class NotificationVmTests(unittest.TestCase):
+    def test_match_text_includes_vm_login_and_private_key(self) -> None:
+        text = _match_text(
+            MatchNotification(
+                chat_id=123,
+                branch_id=None,
+                job_id="job-1",
+                account_id="acc-1",
+                account_name="Main",
+                organization_id="org-1",
+                cloud_id="cloud-1",
+                cloud_name="Cloud",
+                folder_id="folder-1",
+                address_id="vm:vm-1",
+                ip="84.201.10.20",
+                prefix="84.201",
+                preexisting=False,
+                resource_id="vm-1",
+                resource_type="vm",
+                ssh_username="user",
+                ssh_private_key="-----BEGIN OPENSSH PRIVATE KEY-----\nkey\n-----END OPENSSH PRIVATE KEY-----",
+                zone_id="ru-central1-a",
+            ),
+            custom_emoji=False,
+        )
+
+        self.assertIn("vm-1", text)
+        self.assertIn("ru-central1-a", text)
+        self.assertIn("user", text)
+        self.assertIn("PRIVATE KEY", text)
+
+
+class SchedulerComputePreflightTests(unittest.IsolatedAsyncioTestCase):
+    async def test_scan_existing_prefix_ips_reports_compute_instance_ips(self) -> None:
+        scheduler = HuntScheduler(
+            settings=SimpleNamespace(),
+            db=SimpleNamespace(),
+            state=SimpleNamespace(),
+            hunter=SimpleNamespace(),
+            semaphore=asyncio.Semaphore(1),
+            logger=logging.getLogger("test"),
+        )
+        scheduler._get_account_for_branch = AsyncMock(
+            return_value=SimpleNamespace(
+                id="acc-1",
+                name="Main",
+                oauth_token="token",
+                proxy_url=None,
+            )
+        )
+        scheduler.list_account_organizations = AsyncMock(
+            return_value=[
+                {
+                    "account_id": "acc-1",
+                    "account_name": "Main",
+                    "organization_id": "org-1",
+                    "organization_name": "Org",
+                }
+            ]
+        )
+
+        class FakeYcClient:
+            def __init__(self, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+        class FakeCloudsApi:
+            def __init__(self, **kwargs):
+                pass
+
+            async def list_clouds(self, organization_id):
+                return [
+                    SimpleNamespace(
+                        id="cloud-1",
+                        name="Cloud",
+                        state=DbCloudState.ACTIVE,
+                        deleting=False,
+                    )
+                ]
+
+            async def list_folders(self, cloud_id):
+                return [SimpleNamespace(id="folder-1", name="Folder")]
+
+        class FakeVpcApi:
+            def __init__(self, **kwargs):
+                pass
+
+            async def list_addresses(self, folder_id):
+                return [Address(id="addr-1", ip="8.8.8.8")]
+
+        class FakeComputeApi:
+            def __init__(self, **kwargs):
+                pass
+
+            async def list_instances(self, folder_id):
+                return [Instance(id="vm-1", ip="51.250.10.20", zone_id="ru-central1-d", name="VM")]
+
+        with (
+            patch("ycbot.core.scheduler.YcClient", FakeYcClient),
+            patch("ycbot.core.scheduler.CloudsApi", FakeCloudsApi),
+            patch("ycbot.core.scheduler.VpcApi", FakeVpcApi),
+            patch("ycbot.core.scheduler.ComputeApi", FakeComputeApi),
+        ):
+            result = await scheduler.scan_existing_prefix_ips(
+                [HuntStartScope(account_id="acc-1", organization_id="org-1")],
+                branch_id=None,
+            )
+
+        self.assertEqual([], result["errors"])
+        self.assertEqual(1, len(result["existing_ips"]))
+        self.assertEqual("51.250.10.20", result["existing_ips"][0]["ip"])
+        self.assertEqual("51.250", result["existing_ips"][0]["prefix"])
+        self.assertEqual("vm", result["existing_ips"][0]["resource_type"])
+        self.assertEqual("vm-1", result["existing_ips"][0]["instance_id"])
+
+
+class CleanupRoutingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_delete_tracked_resource_routes_vm_records_to_compute(self) -> None:
+        scheduler = HuntScheduler(
+            settings=SimpleNamespace(),
+            db=SimpleNamespace(),
+            state=SimpleNamespace(),
+            hunter=SimpleNamespace(),
+            semaphore=asyncio.Semaphore(1),
+            logger=logging.getLogger("test"),
+        )
+        scheduler._address_is_matched = AsyncMock(return_value=False)
+        scheduler._mark_deleted = AsyncMock()
+        vpc_api = SimpleNamespace(delete_address=AsyncMock())
+        compute_api = SimpleNamespace(delete_instance=AsyncMock())
+
+        deleted = await scheduler._delete_tracked_resource("acc-1", "vm:vm-1", vpc_api, compute_api)
+
+        self.assertTrue(deleted)
+        compute_api.delete_instance.assert_awaited_once_with("vm-1")
+        vpc_api.delete_address.assert_not_awaited()
+        scheduler._mark_deleted.assert_awaited_once_with("acc-1", "vm:vm-1")
+
+    async def test_delete_tracked_resource_routes_legacy_addresses_to_vpc(self) -> None:
+        scheduler = HuntScheduler(
+            settings=SimpleNamespace(),
+            db=SimpleNamespace(),
+            state=SimpleNamespace(),
+            hunter=SimpleNamespace(),
+            semaphore=asyncio.Semaphore(1),
+            logger=logging.getLogger("test"),
+        )
+        scheduler._address_is_matched = AsyncMock(return_value=False)
+        scheduler._mark_deleted = AsyncMock()
+        vpc_api = SimpleNamespace(delete_address=AsyncMock())
+        compute_api = SimpleNamespace(delete_instance=AsyncMock())
+
+        deleted = await scheduler._delete_tracked_resource("acc-1", "addr-1", vpc_api, compute_api)
+
+        self.assertTrue(deleted)
+        vpc_api.delete_address.assert_awaited_once_with("addr-1")
+        compute_api.delete_instance.assert_not_awaited()
+        scheduler._mark_deleted.assert_awaited_once_with("acc-1", "addr-1")
