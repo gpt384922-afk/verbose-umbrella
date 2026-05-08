@@ -690,7 +690,7 @@ class HunterEngine:
             self.settings.hunt_vm_image_folder_id,
             self.settings.hunt_vm_image_family,
         )
-        batch_size = max(1, self.settings.hunt_vm_batch_size)
+        batch_size = 8  # Always create 8 VMs per cloud for thorough checking
 
         instances = []
         create_errors: list[Exception] = []
@@ -769,7 +769,7 @@ class HunterEngine:
                 zone_id=result.zone_id,
             )
             if accepted:
-                pass  # Always delete VMs, but mark as matched
+                keep_instance_ids.add(result.id)
 
         delete_instances = [instance for instance in instances if instance.id not in keep_instance_ids]
         for i, instance in enumerate(delete_instances):

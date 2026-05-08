@@ -444,7 +444,7 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(matched)
         self.assertEqual(8, len(compute_api.created))
         self.assertEqual(
-            ["vm-2", "vm-3", "vm-4", "vm-5", "vm-6", "vm-7", "vm-8"],
+            ["vm-2", "vm-3", "vm-4", "vm-6", "vm-7", "vm-8"],
             compute_api.deleted,
         )
         self.assertEqual([], compute_api.stopped)
