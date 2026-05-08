@@ -251,6 +251,7 @@ class HunterEngine:
                                     job_id,
                                     scope,
                                     cloud,
+                                    clouds_api,
                                     compute_api,
                                     vpc_api,
                                     stop_event,
@@ -557,11 +558,29 @@ class HunterEngine:
         job_id: str,
         scope: ScopeDescriptor,
         cloud: ManagedCloud,
+        clouds_api: CloudsApi,
         compute_api: ComputeApi,
         vpc_api: VpcApi,
         stop_event: asyncio.Event,
         vm_config: VmHuntConfig,
     ) -> bool:
+        # Check if cloud is being deleted
+        current_clouds = await clouds_api.list_clouds(scope.organization_id)
+        current_cloud = next((c for c in current_clouds if c.id == cloud.cloud_id), None)
+        if current_cloud and (current_cloud.deleting or current_cloud.state == DbCloudState.DELETING):
+            log_event(self.logger, "cloud.skip.deleting_during_hunt", cloud_id=cloud.cloud_id)
+            await self.state.set_cloud_lifecycle(job_id, cloud.cloud_id, CloudLifecycle.FAILED, error="cloud deleting")
+            await self._set_cloud_progress(
+                job_id,
+                scope,
+                cloud.cloud_id,
+                HuntCloudStatus.FAILED,
+                1,
+                notes="cloud deleting during hunt",
+                error="cloud deleting",
+            )
+            return False
+
         await self.state.set_cloud_lifecycle(job_id, cloud.cloud_id, CloudLifecycle.HUNTING)
         await self._set_cloud_progress(job_id, scope, cloud.cloud_id, HuntCloudStatus.RUNNING, 0, notes="hunting vm batch")
         await self.state.increment_cloud_attempt(job_id, cloud.cloud_id)

@@ -31,6 +31,24 @@ class FakeComputeClient:
         return {"done": True, "response": {"id": "vm-1"}}
 
 
+class FakeCloudsApi:
+    def __init__(self, deleting=False, **kwargs):
+        self.deleting = deleting
+
+    async def list_clouds(self, organization_id):
+        return [
+            SimpleNamespace(
+                id="cloud-1",
+                name="Cloud",
+                state=DbCloudState.DELETING if self.deleting else DbCloudState.ACTIVE,
+                deleting=self.deleting,
+            )
+        ]
+
+    async def list_folders(self, cloud_id):
+        return [SimpleNamespace(id="folder-1", name="Folder")]
+
+
 class ComputeApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_create_instance_payload_matches_vm_hunt_config(self) -> None:
         client = FakeComputeClient()
@@ -96,7 +114,7 @@ class ComputeApiTests(unittest.IsolatedAsyncioTestCase):
             ],
             body["networkInterfaceSpecs"],
         )
-        self.assertEqual({"preemptible": True}, body["schedulingPolicy"])
+        self.assertEqual({"preemptible": False}, body["schedulingPolicy"])
         self.assertEqual("user:ssh-ed25519 AAAA test", body["metadata"]["ssh-keys"])
         user_data = body["metadata"]["user-data"]
         self.assertIn("#cloud-config", user_data)
@@ -500,6 +518,7 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
             "job-1",
             ScopeDescriptor(account_id="acc-1", organization_id="org-1"),
             self._cloud(),
+            FakeCloudsApi(),
             compute_api,
             FakeVmBatchVpcApi(),
             asyncio.Event(),
@@ -538,6 +557,7 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
             "job-1",
             ScopeDescriptor(account_id="acc-1", organization_id="org-1"),
             self._cloud(),
+            FakeCloudsApi(),
             compute_api,
             FakeVmBatchVpcApi(),
             asyncio.Event(),
@@ -576,6 +596,7 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
             "job-1",
             ScopeDescriptor(account_id="acc-1", organization_id="org-1"),
             self._cloud(),
+            FakeCloudsApi(),
             compute_api,
             FakeVmBatchVpcApi(),
             asyncio.Event(),
@@ -585,6 +606,33 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(matched)
         self.assertEqual([], compute_api.deleted)
         hunter.state.set_cloud_lifecycle.assert_any_await("job-1", "cloud-1", CloudLifecycle.SUCCESS)
+
+    async def test_hunt_cloud_once_skips_deleting_cloud(self) -> None:
+        hunter = self._build_hunter()
+        hunter._set_cloud_progress = AsyncMock()
+        hunter._store_address_created = AsyncMock()
+        hunter._store_address_deleted = AsyncMock()
+        hunter._store_address_failed = AsyncMock()
+        hunter._accept_match = AsyncMock(return_value=True)
+        hunter._matched_prefix = AsyncMock(return_value=None)
+        hunter._target_per_cloud = AsyncMock(return_value=1)
+        compute_api = FakeVmBatchComputeApi({}, create_errors={}, listed_instances=[])
+
+        matched = await hunter._hunt_cloud_once(
+            "job-1",
+            ScopeDescriptor(account_id="acc-1", organization_id="org-1"),
+            self._cloud(),
+            FakeCloudsApi(deleting=True),
+            compute_api,
+            FakeVmBatchVpcApi(),
+            asyncio.Event(),
+            VmHuntConfig.default(),
+        )
+
+        self.assertFalse(matched)
+        # Should not create any VMs
+        self.assertEqual(0, len(compute_api.created))
+        hunter.state.set_cloud_lifecycle.assert_any_await("job-1", "cloud-1", CloudLifecycle.FAILED)
 
 
 class HunterScopeConcurrencyTests(unittest.IsolatedAsyncioTestCase):

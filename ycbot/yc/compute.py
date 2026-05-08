@@ -89,7 +89,7 @@ class ComputeApi:
                     },
                 }
             ],
-            "schedulingPolicy": {"preemptible": True},
+            "schedulingPolicy": {"preemptible": False},
             "metadata": metadata,
             "labels": {"managed_by": "ychunter"},
         }
