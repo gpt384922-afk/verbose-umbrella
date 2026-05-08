@@ -67,6 +67,7 @@ class YcClient:
         params: dict[str, Any] | None = None,
         body: dict[str, Any] | None = None,
         retries: int | None = None,
+        log_errors: bool = True,
     ) -> dict[str, Any]:
         total_attempts = retries or self.settings.yc_request_retries
 
@@ -89,14 +90,15 @@ class YcClient:
                 retryable=self._retryable_exception,
             )
         except Exception as exc:  # noqa: BLE001
-            log_event(
-                self.logger,
-                "yc.request.failed",
-                method=method,
-                url=url,
-                params=params,
-                error=str(exc),
-            )
+            if log_errors:
+                log_event(
+                    self.logger,
+                    "yc.request.failed",
+                    method=method,
+                    url=url,
+                    params=params,
+                    error=str(exc),
+                )
             raise
 
     async def request_iam(self) -> str:

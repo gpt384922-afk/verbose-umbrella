@@ -93,7 +93,12 @@ class ComputeApi:
             "metadata": metadata,
             "labels": {"managed_by": "ycbot"},
         }
-        data = await self.client.request_json("POST", self.settings.yc_compute_instance_url, body=payload)
+        data = await self.client.request_json(
+            "POST",
+            self.settings.yc_compute_instance_url,
+            body=payload,
+            log_errors=False,
+        )
         response = await self._resolve_operation(data)
         instance = self._to_instance(response)
         log_event(

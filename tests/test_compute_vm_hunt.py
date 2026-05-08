@@ -23,8 +23,8 @@ class FakeComputeClient:
     def __init__(self):
         self.requests = []
 
-    async def request_json(self, method, url, *, params=None, body=None, retries=None):
-        self.requests.append((method, url, params, body, retries))
+    async def request_json(self, method, url, *, params=None, body=None, retries=None, log_errors=True):
+        self.requests.append((method, url, params, body, retries, log_errors))
         return {"done": True, "response": {"id": "vm-1", "networkInterfaces": []}}
 
     async def poll_operation(self, operation_id, *, timeout_seconds=240, min_delay=1.0, max_delay=2.5):
@@ -85,11 +85,12 @@ class ComputeApiTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        method, url, params, body, retries = client.requests[0]
+        method, url, params, body, retries, log_errors = client.requests[0]
         self.assertEqual("POST", method)
         self.assertEqual("https://compute.example/instances", url)
         self.assertIsNone(params)
         self.assertIsNone(retries)
+        self.assertFalse(log_errors)
         self.assertEqual("folder-1", body["folderId"])
         self.assertEqual("ru-central1-a", body["zoneId"])
         self.assertEqual("standard-v3", body["platformId"])
@@ -180,7 +181,7 @@ class VpcSubnetTests(unittest.IsolatedAsyncioTestCase):
                     return []
                 raise AssertionError(key)
 
-            async def request_json(self, method, url, *, params=None, body=None, retries=None):
+            async def request_json(self, method, url, *, params=None, body=None, retries=None, log_errors=True):
                 self.posts.append((method, url, body))
                 if url.endswith("/networks"):
                     return {"done": True, "response": {"id": "net-1", "name": body["name"]}}
@@ -249,10 +250,15 @@ class FakeVmBatchComputeApi:
         *,
         create_errors: dict[int, Exception] | None = None,
         listed_instances: list[Instance] | None = None,
+        create_delay: float = 0.0,
     ):
         self.ips = ips
         self.create_errors = create_errors or {}
         self.listed_instances = listed_instances
+        self.create_delay = create_delay
+        self.create_attempts = 0
+        self.create_in_flight = 0
+        self.max_create_in_flight = 0
         self.created = []
         self.deleted = []
         self.stopped = []
@@ -276,24 +282,32 @@ class FakeVmBatchComputeApi:
         ssh_public_key: str,
         vm_config: VmHuntConfig,
     ) -> Instance:
-        instance_index = len(self.created) + 1
+        self.create_attempts += 1
+        instance_index = self.create_attempts
         instance_id = f"vm-{instance_index}"
-        self.created.append(
-            {
-                "instance_id": instance_id,
-                "folder_id": folder_id,
-                "name": name,
-                "zone_id": zone_id,
-                "subnet_id": subnet_id,
-                "image_id": image_id,
-                "ssh_username": ssh_username,
-                "ssh_public_key": ssh_public_key,
-                "vm_config": vm_config,
-            }
-        )
-        if instance_index in self.create_errors:
-            raise self.create_errors[instance_index]
-        return Instance(id=instance_id, ip=None, zone_id=zone_id, name=name)
+        self.create_in_flight += 1
+        self.max_create_in_flight = max(self.max_create_in_flight, self.create_in_flight)
+        try:
+            if self.create_delay:
+                await asyncio.sleep(self.create_delay)
+            self.created.append(
+                {
+                    "instance_id": instance_id,
+                    "folder_id": folder_id,
+                    "name": name,
+                    "zone_id": zone_id,
+                    "subnet_id": subnet_id,
+                    "image_id": image_id,
+                    "ssh_username": ssh_username,
+                    "ssh_public_key": ssh_public_key,
+                    "vm_config": vm_config,
+                }
+            )
+            if instance_index in self.create_errors:
+                raise self.create_errors[instance_index]
+            return Instance(id=instance_id, ip=None, zone_id=zone_id, name=name)
+        finally:
+            self.create_in_flight -= 1
 
     async def list_instances(self, folder_id: str) -> list[Instance]:
         self.list_instances_called = True
@@ -355,9 +369,13 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
     def _build_hunter(self) -> HunterEngine:
         state = SimpleNamespace()
         state.add_checked_ip = AsyncMock()
+        state.set_cloud_lifecycle = AsyncMock()
+        state.increment_cloud_attempt = AsyncMock()
+        state.cloud_match_count = AsyncMock(return_value=0)
         return HunterEngine(
             settings=SimpleNamespace(
                 hunt_vm_batch_size=8,
+                hunt_vm_delete_delay_seconds=0.0,
                 hunt_vm_zones=["ru-central1-a", "ru-central1-d"],
                 hunt_vm_image_folder_id="standard-images",
                 hunt_vm_image_family="ubuntu-2404-lts",
@@ -444,11 +462,13 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(matched)
         self.assertEqual(8, len(compute_api.created))
         self.assertEqual(
-            ["vm-2", "vm-3", "vm-4", "vm-6", "vm-7", "vm-8"],
+            ["vm-1", "vm-2", "vm-3", "vm-4", "vm-6", "vm-7", "vm-8"],
             compute_api.deleted,
         )
         self.assertEqual([], compute_api.stopped)
         self.assertEqual(1, compute_api.max_delete_in_flight)
+        self.assertEqual(7, hunter._store_address_deleted.await_count)
+        hunter._store_address_failed.assert_not_awaited()
         hunter._accept_match.assert_awaited_once()
         kwargs = hunter._accept_match.await_args.kwargs
         self.assertEqual("vm:vm-5", kwargs["address_id"])
@@ -489,7 +509,34 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual([], compute_api.stopped)
         self.assertEqual(1, compute_api.max_delete_in_flight)
+        self.assertEqual(8, hunter._store_address_deleted.await_count)
+        hunter._store_address_failed.assert_not_awaited()
         hunter._accept_match.assert_not_awaited()
+
+    async def test_vm_batch_creates_vms_concurrently(self) -> None:
+        hunter = self._build_hunter()
+        hunter._store_address_created = AsyncMock()
+        hunter._store_address_deleted = AsyncMock()
+        hunter._store_address_failed = AsyncMock()
+        hunter._accept_match = AsyncMock(return_value=True)
+        hunter._matched_prefix = AsyncMock(return_value=None)
+        hunter._target_per_cloud = AsyncMock(return_value=1)
+        compute_api = FakeVmBatchComputeApi(
+            {f"vm-{index}": f"8.8.8.{index}" for index in range(1, 9)},
+            create_delay=0.01,
+        )
+
+        await hunter._hunt_cloud_vm_batch(
+            "job-1",
+            ScopeDescriptor(account_id="acc-1", organization_id="org-1"),
+            self._cloud(),
+            compute_api,
+            FakeVmBatchVpcApi(),
+            asyncio.Event(),
+            VmHuntConfig.default(),
+        )
+
+        self.assertGreater(compute_api.max_create_in_flight, 1)
 
     async def test_quota_error_preserves_cloud_when_existing_vm_has_public_ip(self) -> None:
         quota_error = YcApiError(
@@ -607,6 +654,43 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], compute_api.deleted)
         hunter.state.set_cloud_lifecycle.assert_any_await("job-1", "cloud-1", CloudLifecycle.SUCCESS)
 
+    async def test_vm_create_permission_denied_logs_once(self) -> None:
+        permission_error = YcApiError(
+            status=403,
+            message="request failed",
+            payload='{"code":7,"message":"Permission denied to resource-manager.folder folder-1"}',
+        )
+        hunter = self._build_hunter()
+        hunter._set_cloud_progress = AsyncMock()
+        hunter._store_address_created = AsyncMock()
+        hunter._store_address_deleted = AsyncMock()
+        hunter._store_address_failed = AsyncMock()
+        hunter._accept_match = AsyncMock(return_value=True)
+        hunter._matched_prefix = AsyncMock(return_value=None)
+        hunter._target_per_cloud = AsyncMock(return_value=1)
+        compute_api = FakeVmBatchComputeApi(
+            {},
+            create_errors={index: permission_error for index in range(1, 9)},
+            listed_instances=[],
+        )
+
+        with patch("ycbot.core.hunter.log_error") as log_error_mock:
+            matched = await hunter._hunt_cloud_once(
+                "job-1",
+                ScopeDescriptor(account_id="acc-1", organization_id="org-1"),
+                self._cloud(),
+                FakeCloudsApi(),
+                compute_api,
+                FakeVmBatchVpcApi(),
+                asyncio.Event(),
+                VmHuntConfig.default(),
+            )
+
+        self.assertTrue(matched)
+        self.assertFalse(
+            any(call.args and call.args[1] == "vm.create.error" for call in log_error_mock.call_args_list)
+        )
+
     async def test_hunt_cloud_once_skips_deleting_cloud(self) -> None:
         hunter = self._build_hunter()
         hunter._set_cloud_progress = AsyncMock()
@@ -632,7 +716,8 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(matched)
         # Should not create any VMs
         self.assertEqual(0, len(compute_api.created))
-        hunter.state.set_cloud_lifecycle.assert_any_await("job-1", "cloud-1", CloudLifecycle.FAILED)
+        lifecycle_calls = hunter.state.set_cloud_lifecycle.await_args_list
+        self.assertEqual(("job-1", "cloud-1", CloudLifecycle.FAILED), lifecycle_calls[-1].args[:3])
 
 
 class HunterScopeConcurrencyTests(unittest.IsolatedAsyncioTestCase):

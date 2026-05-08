@@ -612,7 +612,16 @@ class HunterEngine:
             return True
         except Exception as exc:  # noqa: BLE001
             log_error(self.logger, "vm.batch.error", exc, cloud_id=cloud.cloud_id)
-            # Don't mark as FAILED to avoid deleting the cloud on errors
+            await self.state.set_cloud_lifecycle(job_id, cloud.cloud_id, CloudLifecycle.FAILED, error=str(exc))
+            await self._set_cloud_progress(
+                job_id,
+                scope,
+                cloud.cloud_id,
+                HuntCloudStatus.FAILED,
+                1,
+                notes="vm batch failed",
+                error=str(exc),
+            )
             return False
         if stop_event.is_set():
             return matched
@@ -686,11 +695,12 @@ class HunterEngine:
 
         instances = []
         create_errors: list[Exception] = []
+        create_tasks = []
         for index in range(batch_size):
             subnet = subnets[index % len(subnets)]
             name = self._next_vm_name(cloud.cloud_id, index)
-            try:
-                instance = await compute_api.create_instance(
+            task = asyncio.create_task(
+                compute_api.create_instance(
                     folder_id=cloud.folder_id,
                     name=name,
                     zone_id=subnet.zone_id,
@@ -700,23 +710,32 @@ class HunterEngine:
                     ssh_public_key=keypair.public_key,
                     vm_config=vm_config,
                 )
-                instances.append(instance)
-            except Exception as exc:
-                create_errors.append(exc)
-                log_error(self.logger, "vm.create.error", exc, cloud_id=cloud.cloud_id)
-            # Add delay between creations to be more gentle
-            if index < batch_size - 1:
-                await asyncio.sleep(1.0)
-            await self._store_address_created(job_id, cloud, vm_record_id(result.id), result.ip)
+            )
+            create_tasks.append(task)
+
+        create_results = await asyncio.gather(*create_tasks, return_exceptions=True)
+        for result in create_results:
+            if isinstance(result, Exception):
+                create_errors.append(result)
+            else:
+                instances.append(result)
+                await self._store_address_created(job_id, cloud, vm_record_id(result.id), result.ip)
 
         quota_errors = [error for error in create_errors if self._is_quota_error(error)]
         permission_errors = [error for error in create_errors if self._is_folder_permission_error(error)]
+        if create_errors:
+            self._log_vm_create_errors(
+                cloud_id=cloud.cloud_id,
+                create_errors=create_errors,
+                quota_errors=quota_errors,
+                permission_errors=permission_errors,
+            )
         if permission_errors:
             raise PreserveCloudError("permission denied during vm create; cloud preserved")
         if quota_errors:
             if await self._cloud_has_public_ip(cloud, compute_api, vpc_api):
                 raise PreserveCloudError("quota error; cloud has public ip, preserved")
-            raise RuntimeError("quota error and cloud has no public ip")
+            return False
 
         if not instances:
             return False
@@ -764,19 +783,47 @@ class HunterEngine:
                 keep_instance_ids.add(poll_result.id)
 
         delete_instances = [instance for instance in instances if instance.id not in keep_instance_ids]
+        delete_delay = max(0.0, float(getattr(self.settings, "hunt_vm_delete_delay_seconds", 1.0)))
         for i, instance in enumerate(delete_instances):
             try:
                 await compute_api.delete_instance(instance.id)
             except Exception as exc:
                 log_error(self.logger, "vm.delete.error", exc, instance_id=instance.id)
-            # Add delay between deletions to be more gentle
-            if i < len(delete_instances) - 1:
-                await asyncio.sleep(1.0)
                 await self._store_address_failed(scope.account_id, vm_record_id(instance.id))
                 continue
             await self._store_address_deleted(scope.account_id, vm_record_id(instance.id))
+            if delete_delay and i < len(delete_instances) - 1:
+                await asyncio.sleep(delete_delay)
 
         return bool(keep_instance_ids)
+
+    def _log_vm_create_errors(
+        self,
+        *,
+        cloud_id: str,
+        create_errors: list[Exception],
+        quota_errors: list[Exception],
+        permission_errors: list[Exception],
+    ) -> None:
+        log_event(
+            self.logger,
+            "vm.create.errors",
+            cloud_id=cloud_id,
+            count=len(create_errors),
+            permission_count=len(permission_errors),
+            quota_count=len(quota_errors),
+            other_count=len(create_errors) - len(permission_errors) - len(quota_errors),
+            first_error_type=type(create_errors[0]).__name__,
+            first_error=self._short_error(create_errors[0]),
+        )
+
+    @staticmethod
+    def _short_error(error: Exception) -> str:
+        text = " ".join(str(error).split())
+        match = re.search(r'"message"\s*:\s*"([^"]+)"', text)
+        if match:
+            text = match.group(1)
+        return text[:220]
 
     @staticmethod
     def _is_quota_error(error: Exception) -> bool:
@@ -790,9 +837,7 @@ class HunterEngine:
     def _is_folder_permission_error(error: Exception) -> bool:
         text = str(error).lower()
         return (
-            isinstance(error, YcApiError)
-            and error.status == 403
-            and "permission denied" in text
+            "permission denied" in text
             and "resource-manager.folder" in text
         )
 

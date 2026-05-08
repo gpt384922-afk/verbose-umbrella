@@ -97,6 +97,7 @@ class Settings(BaseSettings):
     hunt_poll_timeout_seconds: int = Field(default=30, alias="HUNT_POLL_TIMEOUT_SECONDS")
     hunt_worker_count: int = Field(default=8, alias="HUNT_WORKER_COUNT")
     hunt_vm_batch_size: int = Field(default=8, alias="HUNT_VM_BATCH_SIZE")
+    hunt_vm_delete_delay_seconds: float = Field(default=1.0, alias="HUNT_VM_DELETE_DELAY_SECONDS")
     hunt_vm_poll_seconds: int = Field(default=5, alias="HUNT_VM_POLL_SECONDS")
     hunt_vm_poll_timeout_seconds: int = Field(default=180, alias="HUNT_VM_POLL_TIMEOUT_SECONDS")
     hunt_vm_zones_raw: str = Field(default="ru-central1-a,ru-central1-d", alias="HUNT_VM_ZONES")
