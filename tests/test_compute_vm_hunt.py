@@ -117,6 +117,54 @@ class ComputeApiTests(unittest.IsolatedAsyncioTestCase):
             ],
             body["networkInterfaceSpecs"],
         )
+
+    async def test_create_instance_payload_supports_minimal_cascade_lake_config(self) -> None:
+        client = FakeComputeClient()
+        api = ComputeApi(
+            client=client,
+            settings=SimpleNamespace(
+                yc_compute_instance_url="https://compute.example/instances",
+                yc_compute_image_url="https://compute.example/images",
+                hunt_vm_platform_id="standard-v2",
+                hunt_vm_disk_type_id="network-hdd",
+                hunt_vm_disk_size_gb=5,
+                hunt_vm_cores=2,
+                hunt_vm_core_fraction=5,
+                hunt_vm_memory_gb=0.5,
+            ),
+            logger=logging.getLogger("test"),
+        )
+
+        await api.create_instance(
+            folder_id="folder-1",
+            name="hunter-vm-1",
+            zone_id="ru-central1-a",
+            subnet_id="subnet-a",
+            image_id="image-1",
+            ssh_username="user",
+            ssh_public_key="ssh-ed25519 AAAA test",
+            vm_config=VmHuntConfig(
+                platform_id="standard-v2",
+                cores=2,
+                core_fraction=5,
+                memory_gb=0.5,
+                disk_type_id="network-hdd",
+                disk_size_gb=5,
+            ),
+        )
+
+        body = client.requests[0][3]
+        self.assertEqual("standard-v2", body["platformId"])
+        self.assertEqual(
+            {
+                "cores": "2",
+                "memory": str(512 * 1024**2),
+                "coreFraction": "5",
+            },
+            body["resourcesSpec"],
+        )
+        self.assertEqual("network-hdd", body["bootDiskSpec"]["diskSpec"]["typeId"])
+        self.assertEqual(str(5 * 1024**3), body["bootDiskSpec"]["diskSpec"]["size"])
         self.assertEqual({"preemptible": False}, body["schedulingPolicy"])
         self.assertEqual("user:ssh-ed25519 AAAA test", body["metadata"]["ssh-keys"])
         user_data = body["metadata"]["user-data"]

@@ -68,7 +68,7 @@ class ComputeApi:
             "platformId": config.platform_id,
             "resourcesSpec": {
                 "cores": str(config.cores),
-                "memory": str(config.memory_gb * 1024**3),
+                "memory": str(int(config.memory_gb * 1024**3)),
                 "coreFraction": str(config.core_fraction),
             },
             "bootDiskSpec": {

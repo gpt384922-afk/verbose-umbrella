@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     hunt_vm_disk_size_gb: int = Field(default=10, alias="HUNT_VM_DISK_SIZE_GB")
     hunt_vm_cores: int = Field(default=2, alias="HUNT_VM_CORES")
     hunt_vm_core_fraction: int = Field(default=20, alias="HUNT_VM_CORE_FRACTION")
-    hunt_vm_memory_gb: int = Field(default=1, alias="HUNT_VM_MEMORY_GB")
+    hunt_vm_memory_gb: float = Field(default=1, alias="HUNT_VM_MEMORY_GB")
     hunt_vm_username: str = Field(default="user", alias="HUNT_VM_USERNAME")
 
     cleanup_interval_seconds: int = Field(default=180, alias="CLEANUP_INTERVAL_SECONDS")

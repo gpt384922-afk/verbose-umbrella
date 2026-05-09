@@ -191,7 +191,7 @@ def hunt_vm_config_keyboard(config: VmHuntConfig) -> InlineKeyboardBuilder:
     kb.button(text="Дальше", callback_data="hunt:vm_done", style="success")
     kb.button(text="Назад", callback_data="hunt:back:target")
     kb.button(text="Отмена", callback_data="hunt:cancel", style="danger")
-    kb.adjust(1, 1, 1, 3, 4, 3, 4, 3, 1, 1, 1)
+    kb.adjust(1, 1, 1, 3, 5, 3, 5, 4, 1, 1, 1)
     return kb
 
 

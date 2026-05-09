@@ -126,9 +126,9 @@ HUNT_CLOUD_TARGET_COUNT=5
 - зоны только `ru-central1-a` и `ru-central1-d`;
 - если в folder нет subnet в этих зонах, бот создает VPC network и subnet'ы;
 - Debian 12;
-- HDD boot disk `10 GB`;
-- AMD Zen 4, `2` vCPU, guaranteed fraction `20%`;
-- RAM `1 GB`;
+- HDD boot disk `5-80 GB`;
+- AMD Zen 4 / Intel Ice Lake / Intel Cascade Lake, от `2` vCPU, guaranteed fraction `5-100%`;
+- RAM от `0.5 GB`;
 - preemptible VM;
 - login `user`;
 - проверка появления публичного IP каждые `5` секунд.

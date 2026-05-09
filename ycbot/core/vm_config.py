@@ -17,9 +17,9 @@ DISK_TYPE_LABELS = {
 }
 
 ALLOWED_CORES = (2, 4, 8)
-ALLOWED_CORE_FRACTIONS = (20, 50, 100)
-ALLOWED_MEMORY_GB = (1, 2, 4, 8)
-ALLOWED_DISK_SIZE_GB = (10, 20, 40, 80)
+ALLOWED_CORE_FRACTIONS = (5, 20, 50, 100)
+ALLOWED_MEMORY_GB = (0.5, 1, 2, 4, 8)
+ALLOWED_DISK_SIZE_GB = (5, 10, 20, 40, 80)
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,7 +27,7 @@ class VmHuntConfig:
     platform_id: str
     cores: int
     core_fraction: int
-    memory_gb: int
+    memory_gb: float
     disk_type_id: str
     disk_size_gb: int
 
@@ -62,7 +62,7 @@ class VmHuntConfig:
             platform_id=str(data.get("platform_id") or default.platform_id),
             cores=int(data.get("cores") or default.cores),
             core_fraction=int(data.get("core_fraction") or default.core_fraction),
-            memory_gb=int(data.get("memory_gb") or default.memory_gb),
+            memory_gb=float(data.get("memory_gb") or default.memory_gb),
             disk_type_id=str(data.get("disk_type_id") or default.disk_type_id),
             disk_size_gb=int(data.get("disk_size_gb") or default.disk_size_gb),
         ).validated()

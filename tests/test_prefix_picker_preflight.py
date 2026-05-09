@@ -149,6 +149,31 @@ class PrefixCatalogUiTests(unittest.TestCase):
         self.assertIn("🟢", by_callback["hunt:vm:cores:4"])
         self.assertIn("Дальше", by_callback["hunt:vm_done"])
 
+    def test_hunt_vm_config_allows_cascade_lake_minimal_resources(self) -> None:
+        config = VmHuntConfig(
+            platform_id="standard-v2",
+            cores=2,
+            core_fraction=5,
+            memory_gb=0.5,
+            disk_type_id="network-hdd",
+            disk_size_gb=5,
+        ).validated()
+        text = _hunt_vm_config_text(config)
+        markup = hunt_vm_config_keyboard(config).as_markup()
+        buttons = [button for row in markup.inline_keyboard for button in row]
+        by_callback = {button.callback_data: button.text for button in buttons}
+
+        self.assertIn("Intel Cascade Lake", text)
+        self.assertIn("2 vCPU", text)
+        self.assertIn("0.5 GB", text)
+        self.assertIn("HDD", text)
+        self.assertIn("5 GB", text)
+        self.assertIn("5%", text)
+        self.assertIn("🟢", by_callback["hunt:vm:platform:standard-v2"])
+        self.assertIn("🟢", by_callback["hunt:vm:fraction:5"])
+        self.assertIn("🟢", by_callback["hunt:vm:memory:0.5"])
+        self.assertIn("🟢", by_callback["hunt:vm:disk_size:5"])
+
 
 class SchedulerPrefixTests(unittest.IsolatedAsyncioTestCase):
     async def test_start_hunt_allows_up_to_five_matching_vms_per_cloud(self) -> None:

@@ -1312,7 +1312,7 @@ async def hunt_vm_config_selected(callback: CallbackQuery, state: FSMContext) ->
     elif field == "cores":
         config["cores"] = int(raw_value)
     elif field == "memory":
-        config["memory_gb"] = int(raw_value)
+        config["memory_gb"] = float(raw_value)
     elif field == "disk_type":
         config["disk_type_id"] = raw_value
     elif field == "disk_size":
