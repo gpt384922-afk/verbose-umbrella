@@ -5,8 +5,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from ycbot.bot.handlers import _hunt_confirm_text, _hunt_prefixes_text, _hunt_vm_config_text
-from ycbot.bot.keyboards import hunt_prefixes_keyboard, hunt_vm_config_keyboard
+from ycbot.bot.handlers import _hunt_confirm_text, _hunt_prefixes_text, _hunt_target_text, _hunt_vm_config_text
+from ycbot.bot.keyboards import hunt_prefixes_keyboard, hunt_vm_config_keyboard, target_keyboard
 from ycbot.core.vm_config import VmHuntConfig
 from ycbot.core.hunter import HunterEngine, ManagedCloud
 from ycbot.core.prefixes import KNOWN_PREFIX_VALUES, match_known_prefix, validate_hunt_prefixes
@@ -54,6 +54,18 @@ class PrefixCatalogUiTests(unittest.TestCase):
         self.assertIn("⚪", by_callback["hunt:prefix:158.160"])
         self.assertIn("Дальше", by_callback["hunt:prefix_done"])
 
+    def test_hunt_target_step_selects_one_to_five_matching_vms_per_cloud(self) -> None:
+        text = _hunt_target_text()
+        markup = target_keyboard().as_markup()
+        buttons = [button for row in markup.inline_keyboard for button in row]
+        by_callback = {button.callback_data: button.text for button in buttons}
+
+        self.assertIn("Сколько VM максимум оставить с нужным префиксом на каждое облако?", text)
+        for count in range(1, 6):
+            self.assertIn(f"hunt:target:{count}", by_callback)
+            self.assertIn(f"{count} VM", by_callback[f"hunt:target:{count}"])
+        self.assertNotIn("hunt:target:6", by_callback)
+
     def test_hunt_confirm_text_shows_preflight_existing_ips(self) -> None:
         text = _hunt_confirm_text(
             {
@@ -87,6 +99,7 @@ class PrefixCatalogUiTests(unittest.TestCase):
         self.assertIn("Уже есть IP", text)
         self.assertIn("158.160.10.20", text)
         self.assertIn("cloud-a", text)
+        self.assertIn("1 VM с нужным префиксом на каждое облако", text)
 
     def test_hunt_confirm_text_shows_empty_preflight_result(self) -> None:
         text = _hunt_confirm_text(
@@ -138,6 +151,48 @@ class PrefixCatalogUiTests(unittest.TestCase):
 
 
 class SchedulerPrefixTests(unittest.IsolatedAsyncioTestCase):
+    async def test_start_hunt_allows_up_to_five_matching_vms_per_cloud(self) -> None:
+        scheduler = HuntScheduler(
+            settings=SimpleNamespace(),
+            db=SimpleNamespace(),
+            state=SimpleNamespace(),
+            hunter=SimpleNamespace(),
+            semaphore=SimpleNamespace(),
+            logger=logging.getLogger("test"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "at least one organization"):
+            await scheduler.start_hunt(
+                HuntStartRequest(
+                    requested_by_chat_id=123,
+                    branch_id=None,
+                    prefixes=["84.201"],
+                    target_count=5,
+                    scopes=[],
+                )
+            )
+
+    async def test_start_hunt_rejects_more_than_five_matching_vms_per_cloud(self) -> None:
+        scheduler = HuntScheduler(
+            settings=SimpleNamespace(),
+            db=SimpleNamespace(),
+            state=SimpleNamespace(),
+            hunter=SimpleNamespace(),
+            semaphore=SimpleNamespace(),
+            logger=logging.getLogger("test"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "target_count must be between 1 and 5"):
+            await scheduler.start_hunt(
+                HuntStartRequest(
+                    requested_by_chat_id=123,
+                    branch_id=None,
+                    prefixes=["84.201"],
+                    target_count=6,
+                    scopes=[HuntStartScope(account_id="acc-1", organization_id="org-1")],
+                )
+            )
+
     async def test_start_hunt_rejects_unknown_prefix_before_database_work(self) -> None:
         scheduler = HuntScheduler(
             settings=SimpleNamespace(),

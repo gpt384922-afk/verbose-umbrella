@@ -9,7 +9,7 @@ from typing import Any
 
 from ycbot.config import Settings
 from ycbot.db.enums import CloudState
-from ycbot.utils import log_event
+from ycbot.utils import format_error, log_event
 from ycbot.utils.retry import RetryError
 from ycbot.yc.client import YcApiError, YcClient
 
@@ -166,7 +166,7 @@ class CloudsApi:
                     org_id=organization_id,
                     attempt=attempt,
                     delay_seconds=round(delay, 2),
-                    error=str(exc),
+                    error=format_error(exc),
                 )
                 await asyncio.sleep(delay)
 
@@ -177,7 +177,7 @@ class CloudsApi:
             cloud_id=cloud.id,
             billing_id=billing_account_id,
             org_id=organization_id,
-            error=str(last_error),
+            error=format_error(last_error),
         )
         try:
             await self.delete_cloud(cloud.id, force_now=True)
@@ -186,7 +186,7 @@ class CloudsApi:
                 self.logger,
                 "cloud.prepare.cleanup_failed",
                 cloud_id=cloud.id,
-                error=str(cleanup_error),
+                error=format_error(cleanup_error),
             )
         raise last_error
 
@@ -295,7 +295,7 @@ class CloudsApi:
                     cloud_id=cloud_id,
                     billing_id=billing_account_id,
                     operation_id=data.get("id"),
-                    error=str(exc),
+                    error=format_error(exc),
                 )
                 return
             if self._is_ignorable_billing_code9(exc, cloud_id):
@@ -305,7 +305,7 @@ class CloudsApi:
                     cloud_id=cloud_id,
                     billing_id=billing_account_id,
                     operation_id=data.get("id"),
-                    error=str(exc),
+                    error=format_error(exc),
                 )
                 return
             raise exc
@@ -321,7 +321,7 @@ class CloudsApi:
                         cloud_id=cloud_id,
                         billing_id=billing_account_id,
                         operation_id=data["id"],
-                        error=str(exc),
+                        error=format_error(exc),
                     )
                     return
                 if self._is_ignorable_billing_code9(exc, cloud_id):
@@ -331,7 +331,7 @@ class CloudsApi:
                         cloud_id=cloud_id,
                         billing_id=billing_account_id,
                         operation_id=data["id"],
-                        error=str(exc),
+                        error=format_error(exc),
                     )
                     return
                 raise
@@ -350,7 +350,7 @@ class CloudsApi:
                 "cloud.billing.binding_check_failed",
                 cloud_id=cloud_id,
                 billing_id=billing_account_id,
-                error=str(exc),
+                error=format_error(exc),
             )
             return False
 
@@ -389,7 +389,7 @@ class CloudsApi:
                     cloud_id=cloud_id,
                     attempt=attempt,
                     delay_seconds=round(delay, 2),
-                    error=str(exc),
+                    error=format_error(exc),
                 )
                 await asyncio.sleep(delay)
 

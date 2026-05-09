@@ -532,8 +532,8 @@ class HuntScheduler:
         return {"existing_ips": existing_ips, "errors": errors}
 
     async def start_hunt(self, request: HuntStartRequest) -> str:
-        if request.target_count not in {1, 2}:
-            raise ValueError("target_count must be 1 or 2")
+        if request.target_count < 1 or request.target_count > 5:
+            raise ValueError("target_count must be between 1 and 5")
         prefixes = validate_hunt_prefixes(request.prefixes)
         vm_config = (
             request.vm_config

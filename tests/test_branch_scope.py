@@ -52,6 +52,7 @@ class BranchScopeUiTests(unittest.TestCase):
         self.assertIn("время работы", lowered)
         self.assertIn("перебрано ip", lowered)
         self.assertIn("активных облаков", lowered)
+        self.assertIn("1 vm с нужным префиксом на cloud", lowered)
         self.assertNotIn("удален", lowered)
         self.assertNotIn("удал", lowered)
 

@@ -205,7 +205,10 @@ def _hunt_prefixes_text() -> str:
 def _hunt_target_text() -> str:
     return (
         f"{ce('bolt')} | <b>Запуск ханта</b> ▾\n\n"
-        + quote(f"{ce('diamond')} <b>Шаг 4/5</b>\nСколько IP нужно поймать на каждое облако?")
+        + quote(
+            f"{ce('diamond')} <b>Шаг 4/5</b>\n"
+            "Сколько VM максимум оставить с нужным префиксом на каждое облако?"
+        )
     )
 
 
@@ -281,7 +284,7 @@ def _hunt_confirm_text(data: dict) -> str:
         f"{ce('eyes')} <b>Префиксы:</b> {_code(', '.join(data.get('prefixes', [])))}\n"
         + _preflight_text(data)
         + "\n"
-        f"{ce('diamond')} <b>Цель:</b> {data.get('target_count')} IP на каждое облако\n"
+        f"{ce('diamond')} <b>Цель:</b> {data.get('target_count')} VM с нужным префиксом на каждое облако\n"
         f"VM: {_code(vm_config.platform_label)}, {_code(str(vm_config.cores) + ' vCPU')}, "
         f"{_code(str(vm_config.memory_gb) + ' GB RAM')}, "
         f"{_code(vm_config.disk_type_label + ' ' + str(vm_config.disk_size_gb) + ' GB')}, "
@@ -314,7 +317,7 @@ def _hunt_detail_text(details: dict) -> str:
             f"{ce('eyes')} <b>Перебрано IP:</b> {int(details.get('checked_ip_count') or 0)}\n"
             f"{ce('crown')} <b>Активных облаков:</b> {int(details.get('active_cloud_count') or 0)}\n"
             f"{ce('diamond')} <b>Прогресс:</b> {details.get('match_count', 0)}/{details.get('target_total', details.get('target_count', 0))} "
-            f"({details.get('target_count', 0)} на cloud)\n"
+            f"({details.get('target_count', 0)} VM с нужным префиксом на cloud)\n"
             f"{ce('bolt')} <b>Префиксы:</b> {_code(', '.join(details.get('prefixes', [])))}\n"
             f"⚠️ <b>Ошибка:</b> {_code(details.get('error') or '-')}"
         )
@@ -1424,7 +1427,7 @@ async def hunt_start_execute(
             f"{ce('crown')} Организаций: <b>{len(scopes)}</b>\n"
             f"{ce('key')} Аккаунтов: <b>{len({item.account_id for item in scopes})}</b>\n"
             f"{ce('eyes')} Префиксы: {_code(', '.join(prefixes))}\n"
-            f"{ce('diamond')} Цель: <b>{target_count}</b> IP на каждое облако\n"
+            f"{ce('diamond')} Цель: <b>{target_count}</b> VM с нужным префиксом на каждое облако\n"
             f"VM: {_code(vm_config.platform_label)}, {_code(str(vm_config.cores) + ' vCPU')}, "
             f"{_code(str(vm_config.memory_gb) + ' GB RAM')}"
         ),

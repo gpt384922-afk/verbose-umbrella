@@ -9,7 +9,7 @@ from typing import Any
 import aiohttp
 
 from ycbot.config import Settings
-from ycbot.utils import log_event, retry_async
+from ycbot.utils import format_error, log_event, retry_async
 
 
 @dataclass(slots=True)
@@ -97,7 +97,7 @@ class YcClient:
                     method=method,
                     url=url,
                     params=params,
-                    error=str(exc),
+                    error=format_error(exc),
                 )
             raise
 

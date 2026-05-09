@@ -155,11 +155,16 @@ def hunt_text_step_keyboard(back_data: str) -> InlineKeyboardBuilder:
 
 def target_keyboard() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
-    kb.button(text="1 IP", callback_data="hunt:target:1", icon_custom_emoji_id=CUSTOM_EMOJI_IDS["diamond"], style="success")
-    kb.button(text="2 IP", callback_data="hunt:target:2", icon_custom_emoji_id=CUSTOM_EMOJI_IDS["diamond"], style="success")
+    for count in range(1, 6):
+        kb.button(
+            text=f"{count} VM",
+            callback_data=f"hunt:target:{count}",
+            icon_custom_emoji_id=CUSTOM_EMOJI_IDS["diamond"],
+            style="success",
+        )
     kb.button(text="Назад", callback_data="hunt:back:prefixes")
     kb.button(text="Отмена", callback_data="hunt:cancel", style="danger")
-    kb.adjust(2, 1, 1)
+    kb.adjust(3, 2, 1, 1)
     return kb
 
 
