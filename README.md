@@ -125,7 +125,7 @@ HUNT_CLOUD_TARGET_COUNT=5
 
 - зоны только `ru-central1-a` и `ru-central1-d`;
 - если в folder нет subnet в этих зонах, бот создает VPC network и subnet'ы;
-- Ubuntu 24.04 LTS;
+- Debian 12;
 - HDD boot disk `10 GB`;
 - AMD Zen 4, `2` vCPU, guaranteed fraction `20%`;
 - RAM `1 GB`;
@@ -196,7 +196,7 @@ HUNT_VM_POLL_SECONDS=5
 HUNT_VM_POLL_TIMEOUT_SECONDS=180
 HUNT_VM_ZONES=ru-central1-a,ru-central1-d
 HUNT_VM_SUBNET_CIDR_BLOCKS=10.10.0.0/24,10.20.0.0/24
-HUNT_VM_IMAGE_FAMILY=ubuntu-2404-lts
+HUNT_VM_IMAGE_FAMILY=debian-12
 HUNT_VM_IMAGE_FOLDER_ID=standard-images
 HUNT_VM_PLATFORM_ID=standard-v4a
 HUNT_VM_DISK_TYPE_ID=network-hdd

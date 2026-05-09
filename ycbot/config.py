@@ -105,7 +105,7 @@ class Settings(BaseSettings):
         default="10.10.0.0/24,10.20.0.0/24",
         alias="HUNT_VM_SUBNET_CIDR_BLOCKS",
     )
-    hunt_vm_image_family: str = Field(default="ubuntu-2404-lts", alias="HUNT_VM_IMAGE_FAMILY")
+    hunt_vm_image_family: str = Field(default="debian-12", alias="HUNT_VM_IMAGE_FAMILY")
     hunt_vm_image_folder_id: str = Field(default="standard-images", alias="HUNT_VM_IMAGE_FOLDER_ID")
     hunt_vm_platform_id: str = Field(default="standard-v4a", alias="HUNT_VM_PLATFORM_ID")
     hunt_vm_disk_type_id: str = Field(default="network-hdd", alias="HUNT_VM_DISK_TYPE_ID")

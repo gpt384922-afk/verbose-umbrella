@@ -269,7 +269,7 @@ In `HunterEngine`:
 - create resource id helpers `vm_record_id(instance_id)` and `strip_vm_record_id(resource_id)`;
 - add `_hunt_cloud_vm_batch(job_id, scope, cloud, compute_api, vpc_api, stop_event)`;
 - select allowed subnets from `settings.hunt_vm_zones`;
-- get Ubuntu image once per batch;
+- get Debian 12 image once per batch;
 - create `settings.hunt_vm_batch_size` tasks concurrently;
 - store each created VM as `vm:<id>`;
 - poll with `settings.hunt_vm_poll_seconds`;

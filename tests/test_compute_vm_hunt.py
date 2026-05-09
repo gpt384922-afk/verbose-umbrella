@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 import asyncio
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from ycbot.bot.notifications import _match_text
+from ycbot.config import Settings
 from ycbot.core.hunter import HunterEngine, ManagedCloud, ScopeDescriptor
 from ycbot.core.hunter import MatchNotification
 from ycbot.core.ssh_keys import generate_ssh_keypair
@@ -243,6 +245,14 @@ class SshKeyTests(unittest.TestCase):
         self.assertIn("OPENSSH PRIVATE KEY", keypair.private_key)
 
 
+class VmImageSettingsTests(unittest.TestCase):
+    def test_default_vm_image_family_is_debian_12(self) -> None:
+        with patch.dict(os.environ, {"TG_TOKEN": "123456:ABCDEF"}, clear=True):
+            settings = Settings(_env_file=None)
+
+        self.assertEqual("debian-12", settings.hunt_vm_image_family)
+
+
 class FakeVmBatchComputeApi:
     def __init__(
         self,
@@ -378,7 +388,7 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
                 hunt_vm_delete_delay_seconds=0.0,
                 hunt_vm_zones=["ru-central1-a", "ru-central1-d"],
                 hunt_vm_image_folder_id="standard-images",
-                hunt_vm_image_family="ubuntu-2404-lts",
+                hunt_vm_image_family="debian-12",
                 hunt_vm_username="user",
                 hunt_vm_poll_seconds=5,
                 hunt_vm_poll_timeout_seconds=30,
