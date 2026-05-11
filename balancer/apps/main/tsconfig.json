@@ -7,5 +7,13 @@
     "rootDir": "src",
     "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../../packages/shared" },
+    { "path": "../../packages/config" },
+    { "path": "../../packages/ip-intel" },
+    { "path": "../../packages/remnawave" },
+    { "path": "../../packages/telegram" },
+    { "path": "../../packages/observability" }
+  ]
 }

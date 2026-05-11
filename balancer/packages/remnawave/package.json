@@ -5,7 +5,9 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts",
-    "test": "vitest run"
+    "build": "tsup src/index.ts --format esm --dts"
+  },
+  "dependencies": {
+    "@flow-guard/shared": "0.1.0"
   }
 }
