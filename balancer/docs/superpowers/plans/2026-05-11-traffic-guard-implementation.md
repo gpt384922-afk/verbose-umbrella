@@ -1,236 +1,191 @@
-# Traffic Guard Implementation Plan
+# Traffic Guard V1 Node-Agent MVP Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the Flow Proxy Traffic Guard monorepo with Main Server, node-agent, shared contracts, scoped firewall controls, Remnawave/Telegram integrations, statistics, Docker packaging, and production documentation.
+**Goal:** Build a simple local node-agent that watches Xray traffic, allows only configured mobile ASNs, temporarily blocks disallowed client IPs, alerts the Telegram admin, and writes structured logs.
 
-**Architecture:** The monorepo contains two deployable apps and focused shared packages. Main Server is a control-plane with SQLite-backed orchestration; node-agent owns local log tailing and scoped nftables changes. Safety-critical behavior is test-first: whitelist precedence, dry-run/notify-only, scoped `ip + port + protocol` blocks, delayed reclassification, and unknown-user mode.
+**Architecture:** V1 is a single daemon running on each VPN node. It has no Main Server, no Remnawave integration, no distributed API, no SQLite scheduler, no user notifications, and no daily reports. The agent reads local Xray access logs, resolves client IP to ASN using a local ASN CIDR database, applies allowlist filtering, blocks through a safe firewall provider, sends Telegram admin alerts with cooldown, and logs every decision.
 
-**Tech Stack:** Node.js, TypeScript, npm workspaces, Fastify, Zod, pino, Vitest, tsx, tsup, better-sqlite3, undici, node-cron, Docker, nftables.
+**Tech Stack:** Node.js, TypeScript, npm workspaces, Vitest, tsx, tsup, Zod, YAML, pino, undici, nftables/ipset through `execFile` argv only.
 
 ---
 
-## Reference Spec
+## V1 Scope
 
-Use [traffic guard design spec](/Users/flow/ychunter/balancer/docs/superpowers/specs/2026-05-11-traffic-guard-design.md) as the source of truth.
+Build now:
+
+- Local `apps/node-agent` daemon.
+- Xray access.log tail/parser.
+- Client IP extraction.
+- Local ASN lookup from a CIDR database file.
+- `allowed_asns` filtering.
+- Temporary IP block/drop when ASN is not allowed.
+- Telegram admin alert.
+- Notification cooldown.
+- `dry_run` mode.
+- Simple `config.yaml`.
+- `nftables`, `ipset`, and `dry-run` firewall providers.
+- Structured JSON logs.
+- Dockerfile, example config, README, installation notes.
+
+Do not build in V1:
+
+- Main Server/control-plane.
+- Remnawave API.
+- User Telegram ID lookup.
+- Soft-block delay.
+- SQLite scheduler.
+- Distributed agent API.
+- Daily reports.
+- Fallback analytics.
+
+Roadmap:
+
+- V2: soft-block delay, stats, richer reports.
+- V3: Remnawave API and user notifications.
+- V4: Main Server/control-plane for multiple nodes.
+
+## Current Repo State
+
+The workspace bootstrap already exists. V1 should trim or ignore platform scaffolding and keep the working surface small:
+
+- Keep: `apps/node-agent`.
+- Keep: `packages/shared`, `packages/config`, `packages/ip-intel`, `packages/firewall`, `packages/telegram`, `packages/observability`.
+- Remove from active workspace or delete: `apps/main`, `packages/remnawave`.
 
 ## File Structure
 
-Create:
+Create or modify:
 
-- `package.json`: npm workspace root scripts.
-- `tsconfig.base.json`: shared TypeScript compiler options.
-- `vitest.config.ts`: workspace test config.
-- `.gitignore`: Node, build, SQLite, logs, env.
-- `apps/main/package.json`: Main Server package.
-- `apps/main/src/index.ts`: process entrypoint.
-- `apps/main/src/app.ts`: Fastify app factory.
-- `apps/main/src/api/routes.ts`: main API routes.
-- `apps/main/src/orchestration/connection-orchestrator.ts`: connection event decision flow.
-- `apps/main/src/orchestration/block-scheduler.ts`: SQLite-backed delayed block runner.
-- `apps/main/src/storage/main-store.ts`: SQLite schema and queries.
-- `apps/main/src/clients/node-agent-client.ts`: node-agent HTTP client.
-- `apps/main/src/stats/daily-report.ts`: rollups and report builder.
-- `apps/main/test/*.test.ts`: Main Server behavior tests.
-- `apps/node-agent/package.json`: node-agent package.
-- `apps/node-agent/src/index.ts`: process entrypoint.
-- `apps/node-agent/src/app.ts`: Fastify app factory.
-- `apps/node-agent/src/api/routes.ts`: agent API routes.
-- `apps/node-agent/src/logs/xray-access-parser.ts`: tolerant log parser.
-- `apps/node-agent/src/logs/log-tail.ts`: tail loop.
-- `apps/node-agent/src/state/agent-store.ts`: local SQLite state.
-- `apps/node-agent/src/firewall/block-service.ts`: block/unblock business logic.
-- `apps/node-agent/test/*.test.ts`: node-agent behavior tests.
-- `packages/shared/package.json`: shared package.
-- `packages/shared/src/schemas.ts`: Zod DTO schemas.
-- `packages/shared/src/types.ts`: inferred DTO types.
-- `packages/shared/src/validation/ip.ts`: IP/CIDR/port/protocol validation helpers.
-- `packages/shared/src/correlation.ts`: correlation helpers.
-- `packages/shared/test/*.test.ts`: shared tests.
-- `packages/config/package.json`: config package.
-- `packages/config/src/index.ts`: YAML config loader and env interpolation.
-- `packages/config/test/config-loader.test.ts`: config tests.
-- `packages/ip-intel/package.json`: IP intelligence package.
-- `packages/ip-intel/src/decision-engine.ts`: classification engine.
-- `packages/ip-intel/test/decision-engine.test.ts`: classification tests.
-- `packages/firewall/package.json`: firewall package.
-- `packages/firewall/src/provider.ts`: provider interfaces.
+- `package.json`: npm workspaces only for V1 packages.
+- `tsconfig.json`: project references only for V1 packages.
+- `apps/node-agent/package.json`: daemon dependencies and scripts.
+- `apps/node-agent/src/index.ts`: daemon entrypoint.
+- `apps/node-agent/src/agent.ts`: pipeline orchestration.
+- `apps/node-agent/src/logs/xray-access-parser.ts`: parse Xray log lines.
+- `apps/node-agent/src/logs/log-tail.ts`: resilient tail loop.
+- `apps/node-agent/src/state/block-memory.ts`: in-memory active block and notification cooldown state.
+- `apps/node-agent/test/*.test.ts`: agent, parser, and cooldown tests.
+- `packages/shared/src/index.ts`: shared exports.
+- `packages/shared/src/validation.ts`: IP, CIDR, port, duration validation.
+- `packages/shared/src/types.ts`: V1 types.
+- `packages/shared/test/*.test.ts`: validation tests.
+- `packages/config/src/index.ts`: YAML config loader.
+- `packages/config/test/config.test.ts`: config tests.
+- `packages/ip-intel/src/asn-database.ts`: CIDR ASN database loader.
+- `packages/ip-intel/src/asn-filter.ts`: allowlist decision logic.
+- `packages/ip-intel/test/*.test.ts`: ASN tests.
+- `packages/firewall/src/provider.ts`: provider interface.
 - `packages/firewall/src/dry-run-provider.ts`: dry-run provider.
 - `packages/firewall/src/nftables-provider.ts`: nftables provider.
-- `packages/firewall/test/*.test.ts`: firewall tests.
-- `packages/remnawave/package.json`: Remnawave client package.
-- `packages/remnawave/src/client.ts`: typed client.
-- `packages/remnawave/test/client.test.ts`: mapping and error tests.
-- `packages/telegram/package.json`: Telegram package.
-- `packages/telegram/src/notifier.ts`: Telegram sender.
-- `packages/telegram/src/templates.ts`: message templates.
-- `packages/telegram/src/cooldown.ts`: cooldown key logic.
+- `packages/firewall/src/ipset-provider.ts`: ipset provider.
+- `packages/firewall/test/*.test.ts`: firewall safety tests.
+- `packages/telegram/src/admin-notifier.ts`: Telegram admin alert sender.
+- `packages/telegram/src/cooldown.ts`: anti-spam cooldown.
 - `packages/telegram/test/*.test.ts`: Telegram tests.
-- `packages/observability/package.json`: logging package.
-- `packages/observability/src/logger.ts`: pino helpers.
-- `config.example.yaml`: Main Server config example.
-- `node-agent.config.example.yaml`: node-agent config example.
-- `Dockerfile.main`: Main Server Docker image.
-- `Dockerfile.node-agent`: node-agent Docker image.
-- `docker-compose.yml`: local dry-run deployment.
-- `docs/architecture.md`: topology and data flow.
-- `docs/api.md`: HTTP API docs.
-- `docs/installation.md`: installation guide.
-- `docs/nftables.md`: nftables setup and safety model.
-- `docs/telegram-examples.md`: warning and admin examples.
-- `docs/production.md`: hardening and upgrade notes.
+- `packages/observability/src/logger.ts`: pino logger helper.
+- `config.example.yaml`: V1 agent config.
+- `Dockerfile.node-agent`: node-agent image.
+- `README.md`: V1 usage.
+- `docs/installation.md`: install guide.
+- `docs/firewall.md`: nftables/ipset safety notes.
+- `docs/roadmap.md`: V2-V4 roadmap.
 
 ---
 
-### Task 1: Bootstrap Workspace
+### Task 1: Trim Workspace To V1
 
 **Files:**
-- Create: `package.json`
-- Create: `tsconfig.base.json`
-- Create: `vitest.config.ts`
-- Create: `.gitignore`
-- Create: `apps/main/package.json`
-- Create: `apps/node-agent/package.json`
-- Create: `packages/shared/package.json`
-- Create: `packages/config/package.json`
-- Create: `packages/ip-intel/package.json`
-- Create: `packages/firewall/package.json`
-- Create: `packages/remnawave/package.json`
-- Create: `packages/telegram/package.json`
-- Create: `packages/observability/package.json`
+- Modify: `package.json`
+- Modify: `tsconfig.json`
+- Modify: `apps/node-agent/package.json`
+- Modify: V1 package manifests
+- Delete: `apps/main`
+- Delete: `packages/remnawave`
 
-- [ ] **Step 1: Create workspace manifests**
+- [ ] **Step 1: Write a workspace sanity test script expectation**
 
-Root `package.json`:
+No code test is needed for deletion. The verification commands are the test:
+
+```bash
+npm run typecheck
+npm run build
+npm test
+```
+
+- [ ] **Step 2: Remove V1-unused workspace entries**
+
+Keep only these workspaces:
+
+```json
+[
+  "apps/node-agent",
+  "packages/shared",
+  "packages/config",
+  "packages/ip-intel",
+  "packages/firewall",
+  "packages/telegram",
+  "packages/observability"
+]
+```
+
+Remove `apps/main` and `packages/remnawave` from root `tsconfig.json` references and delete those directories.
+
+- [ ] **Step 3: Align app/package dependencies**
+
+`apps/node-agent` depends on:
 
 ```json
 {
-  "name": "flow-proxy-traffic-guard",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "workspaces": ["apps/*", "packages/*"],
-  "scripts": {
-    "build": "npm run build --workspaces --if-present",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "typecheck": "tsc -b",
-    "lint": "tsc -b --pretty false",
-    "dev:main": "tsx apps/main/src/index.ts",
-    "dev:agent": "tsx apps/node-agent/src/index.ts"
-  },
-  "devDependencies": {
-    "@types/node": "^22.15.0",
-    "tsup": "^8.4.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.8.0",
-    "vitest": "^3.1.0"
-  }
+  "@flow-guard/shared": "0.1.0",
+  "@flow-guard/config": "0.1.0",
+  "@flow-guard/ip-intel": "0.1.0",
+  "@flow-guard/firewall": "0.1.0",
+  "@flow-guard/telegram": "0.1.0",
+  "@flow-guard/observability": "0.1.0"
 }
 ```
 
-Use package names:
+Add package references in `apps/node-agent/tsconfig.json` to the same packages.
 
-```json
-{"name":"@flow-guard/shared","version":"0.1.0","type":"module","main":"dist/index.js","types":"dist/index.d.ts","scripts":{"build":"tsup src/index.ts --format esm --dts","test":"vitest run"}}
-```
-
-For app packages, use `private: true` and add package-specific dependencies in later tasks.
-
-- [ ] **Step 2: Create TypeScript and Vitest config**
-
-`tsconfig.base.json`:
-
-```json
-{
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "strict": true,
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
-    "skipLibCheck": true,
-    "resolveJsonModule": true,
-    "outDir": "dist",
-    "baseUrl": ".",
-    "paths": {
-      "@flow-guard/shared": ["packages/shared/src/index.ts"],
-      "@flow-guard/config": ["packages/config/src/index.ts"],
-      "@flow-guard/ip-intel": ["packages/ip-intel/src/index.ts"],
-      "@flow-guard/firewall": ["packages/firewall/src/index.ts"],
-      "@flow-guard/remnawave": ["packages/remnawave/src/index.ts"],
-      "@flow-guard/telegram": ["packages/telegram/src/index.ts"],
-      "@flow-guard/observability": ["packages/observability/src/index.ts"]
-    }
-  }
-}
-```
-
-`vitest.config.ts`:
-
-```ts
-import { defineConfig } from 'vitest/config';
-
-export default defineConfig({
-  test: {
-    include: ['apps/**/*.test.ts', 'packages/**/*.test.ts'],
-    environment: 'node',
-    clearMocks: true,
-  },
-});
-```
-
-- [ ] **Step 3: Install dependencies**
+- [ ] **Step 4: Run verification**
 
 Run:
 
 ```bash
 npm install
-```
-
-Expected: `package-lock.json` is created and no install errors are printed.
-
-- [ ] **Step 4: Verify empty workspace commands**
-
-Run:
-
-```bash
 npm test
 npm run typecheck
+npm run build
 ```
 
-Expected: tests report no test files or pass with no failures; typecheck completes after app/package source stubs are added in subsequent tasks.
+Expected: all pass with current stubs.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add package.json package-lock.json tsconfig.base.json vitest.config.ts .gitignore apps packages
-git commit -m "chore: bootstrap traffic guard workspace"
+git add package.json package-lock.json tsconfig.json apps packages
+git commit -m "chore: trim traffic guard workspace to v1 agent"
 ```
 
 ---
 
-### Task 2: Shared DTOs, Validation, and Correlation
+### Task 2: Shared V1 Types And Validation
 
 **Files:**
-- Create: `packages/shared/src/index.ts`
-- Create: `packages/shared/src/schemas.ts`
+- Create/modify: `packages/shared/src/index.ts`
 - Create: `packages/shared/src/types.ts`
-- Create: `packages/shared/src/validation/ip.ts`
-- Create: `packages/shared/src/correlation.ts`
+- Create: `packages/shared/src/validation.ts`
 - Test: `packages/shared/test/validation.test.ts`
-- Test: `packages/shared/test/schemas.test.ts`
-- Test: `packages/shared/test/correlation.test.ts`
 
 - [ ] **Step 1: Write failing validation tests**
 
 ```ts
 import { describe, expect, it } from 'vitest';
-import { isValidIp, isValidCidr, parsePortProtocolScope } from '../src/index.js';
+import { assertValidBlockInput, isValidCidr, isValidIp } from '../src/index.js';
 
-describe('IP validation', () => {
-  it('accepts single IPs and rejects CIDR or shell-looking values for block commands', () => {
+describe('V1 validation', () => {
+  it('accepts single IPs and rejects CIDR, hostnames, and shell-looking values', () => {
     expect(isValidIp('203.0.113.10')).toBe(true);
     expect(isValidIp('2001:db8::1')).toBe(true);
     expect(isValidIp('203.0.113.0/24')).toBe(false);
@@ -238,21 +193,21 @@ describe('IP validation', () => {
     expect(isValidIp('1.2.3.4; nft flush ruleset')).toBe(false);
   });
 
-  it('validates CIDR only for config blocklists', () => {
-    expect(isValidCidr('1.2.3.0/24')).toBe(true);
+  it('validates CIDR database entries', () => {
+    expect(isValidCidr('203.0.113.0/24')).toBe(true);
     expect(isValidCidr('2001:db8::/32')).toBe(true);
-    expect(isValidCidr('1.2.3.4')).toBe(false);
+    expect(isValidCidr('203.0.113.10')).toBe(false);
   });
 
-  it('requires scoped port and protocol', () => {
-    expect(parsePortProtocolScope({ port: 443, protocol: 'tcp' })).toEqual({ port: 443, protocol: 'tcp' });
-    expect(() => parsePortProtocolScope({ port: 0, protocol: 'tcp' })).toThrow(/port/i);
-    expect(() => parsePortProtocolScope({ port: 443, protocol: 'icmp' })).toThrow(/protocol/i);
+  it('requires safe temporary block input', () => {
+    expect(() => assertValidBlockInput({ ip: '203.0.113.10', durationSec: 3600, reason: 'asn_not_allowed' })).not.toThrow();
+    expect(() => assertValidBlockInput({ ip: '203.0.113.0/24', durationSec: 3600, reason: 'bad' })).toThrow(/ip/i);
+    expect(() => assertValidBlockInput({ ip: '203.0.113.10', durationSec: 0, reason: 'bad' })).toThrow(/duration/i);
   });
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -260,366 +215,180 @@ Run:
 npm test -- packages/shared/test/validation.test.ts
 ```
 
-Expected: FAIL because shared exports do not exist.
+Expected: FAIL because helpers are missing.
 
-- [ ] **Step 3: Implement validation helpers and schemas**
+- [ ] **Step 3: Implement V1 shared types**
 
-Implement exported schemas:
-
-```ts
-export const protocolSchema = z.enum(['tcp', 'udp']);
-export const scopedBlockSchema = z.object({
-  ip: singleIpSchema,
-  port: z.number().int().min(1).max(65535),
-  protocol: protocolSchema,
-  durationSec: z.number().int().positive().max(30 * 24 * 3600),
-  reason: z.string().min(1).max(128),
-  correlationId: z.string().min(1).max(128),
-  source: z.literal('traffic-guard-main'),
-});
-```
-
-Use Node `net.isIP()` for single IP validation. Use `ipaddr.js` for CIDR parsing by adding it to `packages/shared/package.json`.
-
-- [ ] **Step 4: Add DTO schema tests**
+Types:
 
 ```ts
-import { describe, expect, it } from 'vitest';
-import { connectionEventSchema, scopedBlockSchema } from '../src/index.js';
-
-describe('shared schemas', () => {
-  it('accepts connection events with unknown user fields omitted', () => {
-    const parsed = connectionEventSchema.parse({
-      eventId: 'evt-1',
-      nodeName: 'server-b',
-      nodeRole: 'fallback',
-      clientIp: '203.0.113.10',
-      port: 443,
-      protocol: 'tcp',
-      inboundTag: 'backup',
-      timestamp: '2026-05-11T12:00:00.000Z',
-    });
-    expect(parsed.userUuid).toBeUndefined();
-    expect(parsed.email).toBeUndefined();
-  });
-
-  it('rejects unscoped block commands', () => {
-    expect(() => scopedBlockSchema.parse({ ip: '203.0.113.10', durationSec: 60, reason: 'x', correlationId: 'c', source: 'traffic-guard-main' })).toThrow();
-  });
-});
+export type Protocol = 'tcp' | 'udp';
+export type FirewallProviderName = 'dry-run' | 'nftables' | 'ipset';
+export type XrayConnectionEvent = {
+  clientIp: string;
+  protocol: Protocol;
+  targetHost?: string;
+  targetPort?: number;
+  inboundTag?: string;
+  rawLine: string;
+  timestamp: string;
+};
+export type AsnLookupResult = {
+  asn: number | null;
+  name?: string;
+  cidr?: string;
+};
+export type BlockInput = {
+  ip: string;
+  durationSec: number;
+  reason: string;
+};
 ```
 
-- [ ] **Step 5: Implement correlation helper**
+Use `net.isIP()` for IP validation and `ipaddr.js` for CIDR validation.
 
-Test:
-
-```ts
-import { describe, expect, it } from 'vitest';
-import { buildUnknownUserCorrelationId } from '../src/index.js';
-
-describe('unknown user correlation', () => {
-  it('groups by client IP, node, inbound, and rounded time window', () => {
-    const id = buildUnknownUserCorrelationId({
-      clientIp: '203.0.113.10',
-      nodeName: 'server-b',
-      inboundTag: 'backup',
-      timestamp: '2026-05-11T12:03:12.000Z',
-      windowSec: 300,
-    });
-    expect(id).toBe('unknown:server-b:backup:203.0.113.10:2026-05-11T12:00:00.000Z');
-  });
-});
-```
-
-- [ ] **Step 6: Run shared tests**
+- [ ] **Step 4: Run tests and typecheck**
 
 Run:
 
 ```bash
 npm test -- packages/shared/test
+npm run typecheck
 ```
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add packages/shared
-git commit -m "feat: add shared traffic guard contracts"
+git add packages/shared package-lock.json
+git commit -m "feat: add v1 shared validation"
 ```
 
 ---
 
-### Task 3: Config Loader
+### Task 3: V1 Config Loader
 
 **Files:**
-- Create: `packages/config/src/index.ts`
-- Test: `packages/config/test/config-loader.test.ts`
+- Create/modify: `packages/config/src/index.ts`
+- Test: `packages/config/test/config.test.ts`
 - Create: `config.example.yaml`
-- Create: `node-agent.config.example.yaml`
 
 - [ ] **Step 1: Write failing config tests**
 
 ```ts
 import { describe, expect, it } from 'vitest';
-import { loadMainConfigFromString, loadAgentConfigFromString } from '../src/index.js';
+import { loadAgentConfigFromString } from '../src/index.js';
 
-describe('config loader', () => {
-  it('interpolates env and validates main config', () => {
-    const config = loadMainConfigFromString(`
-server:
-  host: 0.0.0.0
-  port: 3000
+describe('V1 config', () => {
+  it('loads agent config with env interpolation', () => {
+    const config = loadAgentConfigFromString(`
+agent:
   log_level: info
   dry_run: true
-  notify_only: false
-  database_path: ./data/main.sqlite
-  admin_token: \${ADMIN_TOKEN}
-ports:
-  - port: 443
-    protocol: tcp
-    enabled: true
-filtering:
-  allowlist_only: true
-  allowed_asns: [31133]
-  blocked_asns: [12389]
-  blocked_cidrs: ["1.2.3.0/24"]
-  whitelist_ips: ["127.0.0.1"]
-  never_block_cidrs: ["10.0.0.0/8"]
-soft_block:
-  drop_delay_sec: 30
+  node_name: server-a
+logs:
+  access_log_path: /var/log/xray/access.log
+  from_end: true
+asn:
+  database_path: ./asn.csv
+  allowed_asns: [31133, 8359]
+firewall:
+  provider: nftables
   block_duration_sec: 3600
-notifications:
-  notify_cooldown_sec: 1800
-  admin_notify_cooldown_sec: 300
-remnawave:
-  api_url: https://remnawave.example
-  api_token: \${REMNAWAVE_TOKEN}
-  timeout_ms: 5000
+  nft_binary: /usr/sbin/nft
+  table_name: traffic_guard
+  set_name_v4: blocked_ips_v4
+  set_name_v6: blocked_ips_v6
 telegram:
   bot_token: \${BOT_TOKEN}
   admin_chat_id: "123"
-nodes:
-  - name: server-a
-    role: primary
-    url: http://10.0.0.1:8080
-    token: \${AGENT_TOKEN}
-`, {
-      ADMIN_TOKEN: 'admin',
-      REMNAWAVE_TOKEN: 'rw',
-      BOT_TOKEN: 'bot',
-      AGENT_TOKEN: 'agent',
-    });
-    expect(config.server.dryRun).toBe(true);
-    expect(config.nodes[0].role).toBe('primary');
-  });
+notifications:
+  cooldown_sec: 1800
+`, { BOT_TOKEN: 'token' });
 
-  it('requires scoped nftables set names in agent config', () => {
-    const config = loadAgentConfigFromString(`
-agent:
-  name: server-b
-  role: fallback
-  host: 0.0.0.0
-  port: 8080
-  token: agent
-  main_url: http://main:3000
-  main_token: main
-  dry_run: true
-  state_path: ./data/agent.sqlite
-logs:
-  access_log_path: /var/log/xray/access.log
-  parser: xray-access
-  from_end: true
-firewall:
-  provider: nftables
-  nft_binary: /usr/sbin/nft
-  table_name: traffic_guard
-  scoped_sets:
-    tcp_ipv4: blocked_tcp_v4
-    udp_ipv4: blocked_udp_v4
-    tcp_ipv6: blocked_tcp_v6
-    udp_ipv6: blocked_udp_v6
-`);
-    expect(config.agent.role).toBe('fallback');
-    expect(config.firewall.scopedSets.tcpIpv4).toBe('blocked_tcp_v4');
+    expect(config.agent.dryRun).toBe(true);
+    expect(config.asn.allowedAsns).toEqual([31133, 8359]);
+    expect(config.telegram.botToken).toBe('token');
   });
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run test to verify failure**
 
 Run:
 
 ```bash
-npm test -- packages/config/test/config-loader.test.ts
+npm test -- packages/config/test/config.test.ts
 ```
 
-Expected: FAIL because config package has no loader.
+Expected: FAIL because loader is missing.
 
-- [ ] **Step 3: Implement YAML loader**
+- [ ] **Step 3: Implement loader**
 
-Add dependencies to `packages/config/package.json`: `yaml` and `zod`.
+Add dependencies: `yaml`, `zod`.
 
-Implementation exports:
+Runtime config shape:
 
 ```ts
-export function loadMainConfigFromString(input: string, env = process.env): MainConfig;
-export function loadAgentConfigFromString(input: string, env = process.env): AgentConfig;
-export function loadMainConfig(path: string): MainConfig;
-export function loadAgentConfig(path: string): AgentConfig;
-```
-
-Map snake_case YAML fields into camelCase runtime config. Throw `ConfigError` with a concise validation message when env values are missing or schemas fail.
-
-- [ ] **Step 4: Create example configs**
-
-Use the spec examples exactly, including `server.notify_only`, node roles, and `firewall.scoped_sets`.
-
-- [ ] **Step 5: Run config tests**
-
-Run:
-
-```bash
-npm test -- packages/config/test
-```
-
-Expected: PASS.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add packages/config config.example.yaml node-agent.config.example.yaml
-git commit -m "feat: add traffic guard config loader"
-```
-
----
-
-### Task 4: IP Intelligence Decision Engine
-
-**Files:**
-- Create: `packages/ip-intel/src/index.ts`
-- Create: `packages/ip-intel/src/decision-engine.ts`
-- Test: `packages/ip-intel/test/decision-engine.test.ts`
-
-- [ ] **Step 1: Write failing priority tests**
-
-```ts
-import { describe, expect, it } from 'vitest';
-import { decideConnection } from '../src/index.js';
-
-describe('decision engine', () => {
-  it('lets whitelist IP override blocked ASN and CIDR', () => {
-    const decision = decideConnection({
-      event: { clientIp: '203.0.113.10', port: 443, protocol: 'tcp' },
-      intel: { asn: 12389, cidr: '203.0.113.0/24' },
-      config: {
-        ports: [{ port: 443, protocol: 'tcp', enabled: true }],
-        filtering: {
-          allowlistOnly: true,
-          allowedAsns: [31133],
-          blockedAsns: [12389],
-          blockedCidrs: ['203.0.113.0/24'],
-          whitelistIps: ['203.0.113.10'],
-          neverBlockCidrs: [],
-        },
-      },
-    });
-    expect(decision.action).toBe('allow');
-    expect(decision.reason).toBe('whitelist_ip');
-  });
-
-  it('blocks unknown ASN when allowlist_only is enabled', () => {
-    const decision = decideConnection({
-      event: { clientIp: '198.51.100.10', port: 443, protocol: 'tcp' },
-      intel: { asn: 64500, cidr: '198.51.100.0/24' },
-      config: {
-        ports: [{ port: 443, protocol: 'tcp', enabled: true }],
-        filtering: {
-          allowlistOnly: true,
-          allowedAsns: [31133],
-          blockedAsns: [],
-          blockedCidrs: [],
-          whitelistIps: [],
-          neverBlockCidrs: [],
-        },
-      },
-    });
-    expect(decision.action).toBe('block_scheduled');
-    expect(decision.reason).toBe('asn_not_allowed');
-  });
-});
-```
-
-- [ ] **Step 2: Run tests to verify they fail**
-
-Run:
-
-```bash
-npm test -- packages/ip-intel/test/decision-engine.test.ts
-```
-
-Expected: FAIL because `decideConnection` is missing.
-
-- [ ] **Step 3: Implement decision engine**
-
-Return:
-
-```ts
-type Decision = {
-  action: 'allow' | 'ignored' | 'block_scheduled';
-  reason: string;
-  scope: { ip: string; port: number; protocol: 'tcp' | 'udp' };
+export type AgentConfig = {
+  agent: { logLevel: 'debug' | 'info' | 'warn' | 'error'; dryRun: boolean; nodeName: string };
+  logs: { accessLogPath: string; fromEnd: boolean };
+  asn: { databasePath: string; allowedAsns: number[] };
+  firewall: {
+    provider: 'dry-run' | 'nftables' | 'ipset';
+    blockDurationSec: number;
+    nftBinary?: string;
+    tableName?: string;
+    setNameV4?: string;
+    setNameV6?: string;
+    ipsetBinary?: string;
+    iptablesBinary?: string;
+    ipsetNameV4?: string;
+    ipsetNameV6?: string;
+  };
+  telegram: { botToken: string; adminChatId: string };
+  notifications: { cooldownSec: number };
 };
 ```
 
-Evaluation order must be:
+If `agent.dry_run=true`, allow `firewall.provider` to be either configured provider or `dry-run`; the agent will choose dry-run at runtime.
 
-```ts
-whitelist IP -> never-block CIDR -> disabled port/protocol -> blocked CIDR -> allowlist ASN -> blocked ASN -> allow
-```
+- [ ] **Step 4: Create example config**
 
-- [ ] **Step 4: Add never-block and disabled-port tests**
+`config.example.yaml` must include:
 
-```ts
-it('lets never-block CIDR override blocklists', () => {
-  const decision = decideConnection({
-    event: { clientIp: '10.10.10.10', port: 443, protocol: 'tcp' },
-    intel: { asn: 12389, cidr: '10.0.0.0/8' },
-    config: {
-      ports: [{ port: 443, protocol: 'tcp', enabled: true }],
-      filtering: {
-        allowlistOnly: true,
-        allowedAsns: [31133],
-        blockedAsns: [12389],
-        blockedCidrs: ['10.0.0.0/8'],
-        whitelistIps: [],
-        neverBlockCidrs: ['10.0.0.0/8'],
-      },
-    },
-  });
-  expect(decision.action).toBe('allow');
-  expect(decision.reason).toBe('never_block_cidr');
-});
+```yaml
+agent:
+  log_level: info
+  dry_run: true
+  node_name: server-a
 
-it('ignores disabled ports before ASN checks', () => {
-  const decision = decideConnection({
-    event: { clientIp: '198.51.100.10', port: 443, protocol: 'udp' },
-    intel: { asn: 64500, cidr: '198.51.100.0/24' },
-    config: {
-      ports: [{ port: 443, protocol: 'udp', enabled: false }],
-      filtering: {
-        allowlistOnly: true,
-        allowedAsns: [31133],
-        blockedAsns: [64500],
-        blockedCidrs: ['198.51.100.0/24'],
-        whitelistIps: [],
-        neverBlockCidrs: [],
-      },
-    },
-  });
-  expect(decision.action).toBe('ignored');
-  expect(decision.reason).toBe('port_disabled');
-});
+logs:
+  access_log_path: /var/log/xray/access.log
+  from_end: true
+
+asn:
+  database_path: ./data/asn.csv
+  allowed_asns:
+    - 31133
+    - 8359
+    - 1299
+
+firewall:
+  provider: nftables
+  block_duration_sec: 3600
+  nft_binary: /usr/sbin/nft
+  table_name: traffic_guard
+  set_name_v4: blocked_ips_v4
+  set_name_v6: blocked_ips_v6
+
+telegram:
+  bot_token: ${TELEGRAM_BOT_TOKEN}
+  admin_chat_id: ${TELEGRAM_ADMIN_CHAT_ID}
+
+notifications:
+  cooldown_sec: 1800
 ```
 
 - [ ] **Step 5: Run tests**
@@ -627,7 +396,8 @@ it('ignores disabled ports before ASN checks', () => {
 Run:
 
 ```bash
-npm test -- packages/ip-intel/test
+npm test -- packages/config/test
+npm run typecheck
 ```
 
 Expected: PASS.
@@ -635,8 +405,95 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/ip-intel
-git commit -m "feat: add ip intelligence decision engine"
+git add packages/config config.example.yaml package-lock.json
+git commit -m "feat: add v1 agent config loader"
+```
+
+---
+
+### Task 4: ASN Database And Allowlist Filter
+
+**Files:**
+- Create/modify: `packages/ip-intel/src/index.ts`
+- Create: `packages/ip-intel/src/asn-database.ts`
+- Create: `packages/ip-intel/src/asn-filter.ts`
+- Test: `packages/ip-intel/test/asn-database.test.ts`
+- Test: `packages/ip-intel/test/asn-filter.test.ts`
+
+- [ ] **Step 1: Write failing ASN database tests**
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { loadAsnDatabaseFromCsvString } from '../src/index.js';
+
+describe('ASN database', () => {
+  it('finds ASN by CIDR match', () => {
+    const db = loadAsnDatabaseFromCsvString(`
+203.0.113.0/24,31133,Yota
+198.51.100.0/24,64500,Datacenter
+`);
+    expect(db.lookup('203.0.113.10')).toMatchObject({ asn: 31133, name: 'Yota', cidr: '203.0.113.0/24' });
+    expect(db.lookup('198.51.100.2')).toMatchObject({ asn: 64500 });
+    expect(db.lookup('192.0.2.1')).toEqual({ asn: null });
+  });
+});
+```
+
+- [ ] **Step 2: Write failing allowlist tests**
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { decideAsn } from '../src/index.js';
+
+describe('ASN allowlist', () => {
+  it('allows configured mobile ASN', () => {
+    expect(decideAsn({ asn: 31133, allowedAsns: [31133, 8359] })).toEqual({ action: 'allow', reason: 'asn_allowed' });
+  });
+
+  it('blocks unknown or disallowed ASN', () => {
+    expect(decideAsn({ asn: 64500, allowedAsns: [31133] })).toEqual({ action: 'block', reason: 'asn_not_allowed' });
+    expect(decideAsn({ asn: null, allowedAsns: [31133] })).toEqual({ action: 'block', reason: 'asn_unknown' });
+  });
+});
+```
+
+- [ ] **Step 3: Run tests to verify failure**
+
+Run:
+
+```bash
+npm test -- packages/ip-intel/test
+```
+
+Expected: FAIL because ASN modules are missing.
+
+- [ ] **Step 4: Implement CIDR database**
+
+Use `ipaddr.js` to parse CIDRs. The CSV format is:
+
+```text
+cidr,asn,name
+203.0.113.0/24,31133,Yota
+```
+
+Ignore blank lines and `#` comments. Load into memory on startup. Linear scan is acceptable for V1; document that radix/trie lookup is a V2 performance improvement if needed.
+
+- [ ] **Step 5: Run tests**
+
+Run:
+
+```bash
+npm test -- packages/ip-intel/test
+npm run typecheck
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add packages/ip-intel package-lock.json
+git commit -m "feat: add asn allowlist filter"
 ```
 
 ---
@@ -644,233 +501,194 @@ git commit -m "feat: add ip intelligence decision engine"
 ### Task 5: Firewall Providers
 
 **Files:**
-- Create: `packages/firewall/src/index.ts`
+- Create/modify: `packages/firewall/src/index.ts`
 - Create: `packages/firewall/src/provider.ts`
 - Create: `packages/firewall/src/dry-run-provider.ts`
 - Create: `packages/firewall/src/nftables-provider.ts`
-- Test: `packages/firewall/test/dry-run-provider.test.ts`
-- Test: `packages/firewall/test/nftables-provider.test.ts`
+- Create: `packages/firewall/src/ipset-provider.ts`
+- Test: `packages/firewall/test/firewall.test.ts`
 
-- [ ] **Step 1: Write failing dry-run tests**
-
-```ts
-import { describe, expect, it } from 'vitest';
-import { DryRunFirewallProvider } from '../src/index.js';
-
-describe('DryRunFirewallProvider', () => {
-  it('records scoped blocks without executing system commands', async () => {
-    const provider = new DryRunFirewallProvider();
-    await provider.blockIp({ ip: '203.0.113.10', port: 443, protocol: 'tcp', durationSec: 60, reason: 'test', correlationId: 'c1' });
-    expect(await provider.isBlocked({ ip: '203.0.113.10', port: 443, protocol: 'tcp' })).toBe(true);
-    expect(await provider.isBlocked({ ip: '203.0.113.10', port: 8443, protocol: 'tcp' })).toBe(false);
-  });
-});
-```
-
-- [ ] **Step 2: Write failing nftables argv tests**
+- [ ] **Step 1: Write failing firewall tests**
 
 ```ts
 import { describe, expect, it, vi } from 'vitest';
-import { NftablesFirewallProvider } from '../src/index.js';
+import { DryRunFirewallProvider, NftablesFirewallProvider, IpsetFirewallProvider } from '../src/index.js';
 
-describe('NftablesFirewallProvider', () => {
-  it('uses execFile argv and scoped tcp ipv4 set', async () => {
-    const calls: Array<{ file: string; args: string[] }> = [];
-    const execFile = vi.fn(async (file: string, args: string[]) => {
-      calls.push({ file, args });
-      return { stdout: '', stderr: '' };
-    });
+describe('firewall providers', () => {
+  it('dry-run records blocks without system commands', async () => {
+    const provider = new DryRunFirewallProvider();
+    await provider.blockIp({ ip: '203.0.113.10', durationSec: 3600, reason: 'asn_not_allowed' });
+    expect(await provider.isBlocked('203.0.113.10')).toBe(true);
+  });
+
+  it('nftables uses execFile argv without shell', async () => {
+    const execFile = vi.fn(async () => ({ stdout: '', stderr: '' }));
     const provider = new NftablesFirewallProvider({
       nftBinary: '/usr/sbin/nft',
       tableName: 'traffic_guard',
-      scopedSets: { tcpIpv4: 'blocked_tcp_v4', udpIpv4: 'blocked_udp_v4', tcpIpv6: 'blocked_tcp_v6', udpIpv6: 'blocked_udp_v6' },
+      setNameV4: 'blocked_ips_v4',
+      setNameV6: 'blocked_ips_v6',
       execFile,
     });
-    await provider.blockIp({ ip: '203.0.113.10', port: 443, protocol: 'tcp', durationSec: 60, reason: 'test', correlationId: 'c1' });
-    expect(calls[0].file).toBe('/usr/sbin/nft');
-    expect(calls[0].args).toContain('blocked_tcp_v4');
-    expect(calls[0].args.join(' ')).toContain('203.0.113.10 . 443');
-    expect(execFile).toHaveBeenCalledTimes(1);
+    await provider.blockIp({ ip: '203.0.113.10', durationSec: 3600, reason: 'asn_not_allowed' });
+    expect(execFile).toHaveBeenCalledWith('/usr/sbin/nft', expect.arrayContaining(['add', 'element', 'inet', 'traffic_guard', 'blocked_ips_v4']), expect.any(Object));
+  });
+
+  it('ipset uses execFile argv without shell', async () => {
+    const execFile = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    const provider = new IpsetFirewallProvider({
+      ipsetBinary: '/usr/sbin/ipset',
+      iptablesBinary: '/usr/sbin/iptables',
+      setNameV4: 'tg_blocked_v4',
+      setNameV6: 'tg_blocked_v6',
+      execFile,
+    });
+    await provider.blockIp({ ip: '203.0.113.10', durationSec: 3600, reason: 'asn_not_allowed' });
+    expect(execFile).toHaveBeenCalledWith('/usr/sbin/ipset', expect.arrayContaining(['add', 'tg_blocked_v4', '203.0.113.10', 'timeout', '3600']), expect.any(Object));
   });
 });
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [ ] **Step 2: Run tests to verify failure**
+
+Run:
+
+```bash
+npm test -- packages/firewall/test/firewall.test.ts
+```
+
+Expected: FAIL because providers are missing.
+
+- [ ] **Step 3: Implement provider interface**
+
+```ts
+export interface FirewallProvider {
+  blockIp(input: BlockInput): Promise<void>;
+  unblockIp(ip: string): Promise<void>;
+  isBlocked(ip: string): Promise<boolean>;
+}
+```
+
+Validation rules:
+
+- accept only single IP addresses;
+- reject CIDR and hostnames;
+- never call shell;
+- always call `execFile(binary, args, options)`;
+- `dry_run` mode must never call system commands.
+
+For nftables, add element to IPv4 or IPv6 set with timeout:
+
+```text
+nft add element inet traffic_guard blocked_ips_v4 { 203.0.113.10 timeout 3600s }
+```
+
+For ipset, add element with timeout:
+
+```text
+ipset add tg_blocked_v4 203.0.113.10 timeout 3600 -exist
+```
+
+- [ ] **Step 4: Run tests**
 
 Run:
 
 ```bash
 npm test -- packages/firewall/test
-```
-
-Expected: FAIL because providers do not exist.
-
-- [ ] **Step 4: Implement provider interfaces**
-
-Define:
-
-```ts
-export type FirewallScope = { ip: string; port: number; protocol: 'tcp' | 'udp' };
-export type BlockIpInput = FirewallScope & { durationSec: number; reason: string; correlationId: string };
-export type FirewallStatus = { mode: 'dry-run' | 'nftables'; ready: boolean; tableReady: boolean; setsReady: boolean; chainReady: boolean; lastError?: string };
-```
-
-Dry-run stores scoped keys in memory. Nftables chooses the set from IP family and protocol, and calls `execFile(nftBinary, ['add', 'element', 'inet', tableName, setName, `{ ${ip} . ${port} timeout ${durationSec}s }`])`.
-
-- [ ] **Step 5: Add status tests**
-
-```ts
-it('reports nftables readiness errors without throwing from status', async () => {
-  const provider = new NftablesFirewallProvider({
-    nftBinary: '/usr/sbin/nft',
-    tableName: 'traffic_guard',
-    scopedSets: { tcpIpv4: 'blocked_tcp_v4', udpIpv4: 'blocked_udp_v4', tcpIpv6: 'blocked_tcp_v6', udpIpv6: 'blocked_udp_v6' },
-    execFile: async () => { throw new Error('nft missing'); },
-  });
-  const status = await provider.getStatus();
-  expect(status.ready).toBe(false);
-  expect(status.lastError).toContain('nft missing');
-});
-```
-
-- [ ] **Step 6: Run firewall tests**
-
-Run:
-
-```bash
-npm test -- packages/firewall/test
+npm run typecheck
 ```
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add packages/firewall
-git commit -m "feat: add scoped firewall providers"
+git commit -m "feat: add v1 firewall providers"
 ```
 
 ---
 
-### Task 6: Node-Agent API and Local State
+### Task 6: Telegram Admin Alerts And Cooldown
 
 **Files:**
-- Create: `apps/node-agent/src/app.ts`
-- Create: `apps/node-agent/src/api/routes.ts`
-- Create: `apps/node-agent/src/firewall/block-service.ts`
-- Create: `apps/node-agent/src/state/agent-store.ts`
-- Create: `apps/node-agent/src/index.ts`
-- Test: `apps/node-agent/test/api.test.ts`
-- Test: `apps/node-agent/test/block-service.test.ts`
+- Create/modify: `packages/telegram/src/index.ts`
+- Create: `packages/telegram/src/admin-notifier.ts`
+- Create: `packages/telegram/src/cooldown.ts`
+- Test: `packages/telegram/test/telegram.test.ts`
 
-- [ ] **Step 1: Write failing API tests**
+- [ ] **Step 1: Write failing tests**
 
 ```ts
-import { describe, expect, it } from 'vitest';
-import { buildAgentApp } from '../src/app.js';
-import { DryRunFirewallProvider } from '@flow-guard/firewall';
+import { describe, expect, it, vi } from 'vitest';
+import { Cooldown, renderAdminAlert, TelegramAdminNotifier } from '../src/index.js';
 
-describe('node-agent API', () => {
-  it('rejects block requests without token', async () => {
-    const app = await buildAgentApp({ token: 'secret', firewall: new DryRunFirewallProvider(), store: 'memory' });
-    const response = await app.inject({ method: 'POST', url: '/block', payload: {} });
-    expect(response.statusCode).toBe(401);
+describe('Telegram admin alerts', () => {
+  it('builds cooldown by ip and reason', () => {
+    const cooldown = new Cooldown(1800, () => 1000);
+    expect(cooldown.shouldSend('203.0.113.10:asn_not_allowed')).toBe(true);
+    cooldown.markSent('203.0.113.10:asn_not_allowed');
+    expect(cooldown.shouldSend('203.0.113.10:asn_not_allowed')).toBe(false);
   });
 
-  it('blocks scoped ip port protocol with dry-run provider', async () => {
-    const firewall = new DryRunFirewallProvider();
-    const app = await buildAgentApp({ token: 'secret', firewall, store: 'memory' });
-    const response = await app.inject({
-      method: 'POST',
-      url: '/block',
-      headers: { authorization: 'Bearer secret' },
-      payload: { ip: '203.0.113.10', port: 443, protocol: 'tcp', durationSec: 60, reason: 'blocked_asn', correlationId: 'c1', source: 'traffic-guard-main' },
-    });
-    expect(response.statusCode).toBe(200);
-    expect(await firewall.isBlocked({ ip: '203.0.113.10', port: 443, protocol: 'tcp' })).toBe(true);
-    expect(await firewall.isBlocked({ ip: '203.0.113.10', port: 8443, protocol: 'tcp' })).toBe(false);
+  it('renders concise admin alert', () => {
+    const text = renderAdminAlert({ nodeName: 'server-a', ip: '203.0.113.10', asn: 64500, asnName: 'Datacenter', reason: 'asn_not_allowed', dryRun: true });
+    expect(text).toContain('server-a');
+    expect(text).toContain('203.0.113.10');
+    expect(text).toContain('64500');
+    expect(text).toContain('DRY RUN');
   });
 
-  it('exposes firewall status', async () => {
-    const app = await buildAgentApp({ token: 'secret', firewall: new DryRunFirewallProvider(), store: 'memory' });
-    const response = await app.inject({ method: 'GET', url: '/firewall/status', headers: { authorization: 'Bearer secret' } });
-    expect(response.statusCode).toBe(200);
-    expect(response.json().mode).toBe('dry-run');
+  it('sends Telegram sendMessage request', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const notifier = new TelegramAdminNotifier({ botToken: 'bot', adminChatId: '123', fetch });
+    await notifier.send('hello');
+    expect(fetch).toHaveBeenCalledWith('https://api.telegram.org/botbot/sendMessage', expect.any(Object));
   });
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run tests to verify failure**
 
 Run:
 
 ```bash
-npm test -- apps/node-agent/test/api.test.ts
+npm test -- packages/telegram/test/telegram.test.ts
 ```
 
-Expected: FAIL because node-agent app does not exist.
+Expected: FAIL because notifier is missing.
 
-- [ ] **Step 3: Implement Fastify app and routes**
+- [ ] **Step 3: Implement notifier**
 
-Add dependencies to `apps/node-agent/package.json`: `fastify`, `pino`, `better-sqlite3`, `@flow-guard/shared`, `@flow-guard/firewall`, `@flow-guard/config`.
+Use Telegram Bot API `sendMessage`. Escape or avoid Markdown so alert text is safe. On Telegram error, log and continue in the agent; do not crash traffic filtering.
 
-Routes:
-
-```ts
-POST /block
-POST /unblock
-GET /health
-GET /stats
-GET /active-blocks
-GET /firewall/status
-```
-
-Every route checks `Authorization: Bearer <token>` before parsing command bodies. Use shared Zod schemas for body validation.
-
-- [ ] **Step 4: Write cleanup test**
-
-```ts
-it('cleans up expired local blocks when main is unavailable', async () => {
-  const firewall = new DryRunFirewallProvider();
-  const service = createBlockService({ firewall, store: 'memory', now: () => new Date('2026-05-11T12:00:00Z') });
-  await service.block({ ip: '203.0.113.10', port: 443, protocol: 'tcp', durationSec: 1, reason: 'test', correlationId: 'c1' });
-  service.setClock(() => new Date('2026-05-11T12:00:02Z'));
-  await service.cleanupExpired();
-  expect(await firewall.isBlocked({ ip: '203.0.113.10', port: 443, protocol: 'tcp' })).toBe(false);
-});
-```
-
-- [ ] **Step 5: Implement agent store and block service**
-
-Store active blocks with `ip`, `port`, `protocol`, `reason`, `correlation_id`, `expires_at`, `status`. `cleanupExpired()` calls provider `unblockIp` for expired active rows and marks them `expired`.
-
-- [ ] **Step 6: Run node-agent tests**
+- [ ] **Step 4: Run tests**
 
 Run:
 
 ```bash
-npm test -- apps/node-agent/test
+npm test -- packages/telegram/test
+npm run typecheck
 ```
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add apps/node-agent
-git commit -m "feat: add node agent scoped firewall api"
+git add packages/telegram
+git commit -m "feat: add telegram admin alerts"
 ```
 
 ---
 
-### Task 7: Node-Agent Log Parser and Event Sender
+### Task 7: Xray Log Parser And Tail Loop
 
 **Files:**
 - Create: `apps/node-agent/src/logs/xray-access-parser.ts`
 - Create: `apps/node-agent/src/logs/log-tail.ts`
-- Create: `apps/node-agent/src/logs/event-sender.ts`
 - Test: `apps/node-agent/test/xray-access-parser.test.ts`
-- Test: `apps/node-agent/test/event-sender.test.ts`
+- Test: `apps/node-agent/test/log-tail.test.ts`
 
 - [ ] **Step 1: Write failing parser tests**
 
@@ -879,24 +697,19 @@ import { describe, expect, it } from 'vitest';
 import { parseXrayAccessLine } from '../src/logs/xray-access-parser.js';
 
 describe('xray access parser', () => {
-  it('emits unknown-user event when uuid and email are missing', () => {
-    const event = parseXrayAccessLine({
-      line: '2026/05/11 12:03:12 203.0.113.10:51422 accepted tcp:example.com:443 [backup]',
-      nodeName: 'server-b',
-      nodeRole: 'fallback',
-      windowSec: 300,
-    });
+  it('extracts client ip and target from accepted tcp line', () => {
+    const event = parseXrayAccessLine('2026/05/11 12:03:12 203.0.113.10:51422 accepted tcp:example.com:443 [proxy-a]');
     expect(event).toMatchObject({
-      nodeName: 'server-b',
-      nodeRole: 'fallback',
       clientIp: '203.0.113.10',
-      port: 443,
       protocol: 'tcp',
-      inboundTag: 'backup',
+      targetHost: 'example.com',
+      targetPort: 443,
+      inboundTag: 'proxy-a',
     });
-    expect(event.userUuid).toBeUndefined();
-    expect(event.email).toBeUndefined();
-    expect(event.correlationId).toBe('unknown:server-b:backup:203.0.113.10:2026-05-11T12:00:00.000Z');
+  });
+
+  it('returns null for unparsable lines', () => {
+    expect(parseXrayAccessLine('not an xray access line')).toBeNull();
   });
 });
 ```
@@ -913,37 +726,39 @@ Expected: FAIL because parser is missing.
 
 - [ ] **Step 3: Implement parser**
 
-Parse common Xray access lines with a small set of regexes. If the line cannot produce a `clientIp`, `port`, `protocol`, and `inboundTag`, return a typed parse error object and increment parser error counters in the tail loop.
+Support V1 line shape:
 
-- [ ] **Step 4: Write event sender test**
+```text
+YYYY/MM/DD HH:mm:ss CLIENT_IP:CLIENT_PORT accepted tcp:HOST:PORT [INBOUND]
+```
+
+Also support `udp:` in the same position. Preserve `rawLine` and ISO timestamp.
+
+- [ ] **Step 4: Write tail loop test**
 
 ```ts
-it('sends valid connection events to main with bearer token', async () => {
-  const requests: Array<{ url: string; headers: Record<string, string>; body: unknown }> = [];
-  const sender = createEventSender({
-    mainUrl: 'http://main:3000',
-    token: 'main-token',
-    fetch: async (url, init) => {
-      requests.push({ url: String(url), headers: init?.headers as Record<string, string>, body: JSON.parse(String(init?.body)) });
-      return new Response(JSON.stringify({ accepted: true, decision: 'allow', correlationId: 'c1' }), { status: 200 });
-    },
-  });
-  await sender.send({ eventId: 'e1', nodeName: 'server-b', nodeRole: 'fallback', clientIp: '203.0.113.10', port: 443, protocol: 'tcp', inboundTag: 'backup', timestamp: '2026-05-11T12:00:00.000Z' });
-  expect(requests[0].url).toBe('http://main:3000/events/connection');
-  expect(requests[0].headers.authorization).toBe('Bearer main-token');
+it('emits newly appended lines without rereading old lines when fromEnd is true', async () => {
+  const emitted: string[] = [];
+  const tail = createLogTail({ path: fixturePath, fromEnd: true, pollIntervalMs: 10, onLine: (line) => emitted.push(line) });
+  await tail.start();
+  await appendFile(fixturePath, 'new line\\n');
+  await waitFor(() => emitted.includes('new line'));
+  await tail.stop();
+  expect(emitted).toEqual(['new line']);
 });
 ```
 
-- [ ] **Step 5: Implement event sender and tail loop**
+- [ ] **Step 5: Implement tail loop**
 
-Use `fs.watchFile` or a simple polling reader that tracks byte offset. On parser errors, increment stats and continue. On send errors, log structured JSON and continue.
+Use `fs.open`, byte offsets, and polling. Handle log truncation/rotation by resetting offset when file size decreases. Parser errors must not crash the daemon.
 
-- [ ] **Step 6: Run log tests**
+- [ ] **Step 6: Run tests**
 
 Run:
 
 ```bash
-npm test -- apps/node-agent/test/xray-access-parser.test.ts apps/node-agent/test/event-sender.test.ts
+npm test -- apps/node-agent/test/xray-access-parser.test.ts apps/node-agent/test/log-tail.test.ts
+npm run typecheck
 ```
 
 Expected: PASS.
@@ -952,422 +767,174 @@ Expected: PASS.
 
 ```bash
 git add apps/node-agent/src/logs apps/node-agent/test
-git commit -m "feat: add node agent log ingestion"
+git commit -m "feat: add xray log ingestion"
 ```
 
 ---
 
-### Task 8: Main Storage and Delayed Scheduler
+### Task 8: Node-Agent Decision Pipeline
 
 **Files:**
-- Create: `apps/main/src/storage/main-store.ts`
-- Create: `apps/main/src/orchestration/block-scheduler.ts`
-- Test: `apps/main/test/main-store.test.ts`
-- Test: `apps/main/test/block-scheduler.test.ts`
+- Create: `apps/node-agent/src/state/block-memory.ts`
+- Create: `apps/node-agent/src/agent.ts`
+- Modify: `apps/node-agent/src/index.ts`
+- Test: `apps/node-agent/test/agent.test.ts`
 
-- [ ] **Step 1: Write failing storage test**
+- [ ] **Step 1: Write failing pipeline tests**
 
 ```ts
-import { describe, expect, it } from 'vitest';
-import { createMainStore } from '../src/storage/main-store.js';
+import { describe, expect, it, vi } from 'vitest';
+import { TrafficGuardAgent } from '../src/agent.js';
 
-describe('main store', () => {
-  it('persists scheduled scoped blocks', () => {
-    const store = createMainStore(':memory:');
-    const id = store.scheduleBlock({
+describe('TrafficGuardAgent', () => {
+  it('allows client from allowed ASN', async () => {
+    const firewall = { blockIp: vi.fn(), unblockIp: vi.fn(), isBlocked: vi.fn() };
+    const telegram = { send: vi.fn() };
+    const agent = new TrafficGuardAgent({
       nodeName: 'server-a',
-      ip: '203.0.113.10',
-      port: 443,
-      protocol: 'tcp',
-      reason: 'blocked_asn',
-      executeAfter: '2026-05-11T12:00:30.000Z',
-      expiresAt: '2026-05-11T13:00:30.000Z',
-      correlationId: 'c1',
-    });
-    expect(store.listPendingBlocks()[0]).toMatchObject({ id, ip: '203.0.113.10', port: 443, protocol: 'tcp', status: 'pending' });
-  });
-});
-```
-
-- [ ] **Step 2: Run storage test to verify failure**
-
-Run:
-
-```bash
-npm test -- apps/main/test/main-store.test.ts
-```
-
-Expected: FAIL because store is missing.
-
-- [ ] **Step 3: Implement SQLite schema**
-
-Create tables from the spec. Use prepared statements. Store timestamps as ISO strings. Add unique index on active blocks: `(node_name, ip, port, protocol)`.
-
-- [ ] **Step 4: Write scheduler reclassification test**
-
-```ts
-it('cancels delayed block when current config whitelists the IP', async () => {
-  const store = createMainStore(':memory:');
-  const blockId = store.scheduleBlock({
-    nodeName: 'server-a',
-    ip: '203.0.113.10',
-    port: 443,
-    protocol: 'tcp',
-    reason: 'asn_not_allowed',
-    executeAfter: '2026-05-11T12:00:30.000Z',
-    expiresAt: '2026-05-11T13:00:30.000Z',
-    correlationId: 'c1',
-  });
-  const sent: unknown[] = [];
-  const config = {
-    server: { dryRun: false, notifyOnly: false },
-    ports: [{ port: 443, protocol: 'tcp', enabled: true }],
-    filtering: {
-      allowlistOnly: true,
+      dryRun: false,
       allowedAsns: [31133],
-      blockedAsns: [12389],
-      blockedCidrs: [],
-      whitelistIps: ['203.0.113.10'],
-      neverBlockCidrs: [],
-    },
-  };
-  const scheduler = createBlockScheduler({
-    store,
-    now: () => new Date('2026-05-11T12:00:31Z'),
-    loadCurrentConfig: () => config,
-    classify: () => ({ action: 'allow', reason: 'whitelist_ip', scope: { ip: '203.0.113.10', port: 443, protocol: 'tcp' } }),
-    nodeClient: { block: async (cmd) => sent.push(cmd), unblock: async () => undefined },
-  });
-  await scheduler.tick();
-  expect(sent).toHaveLength(0);
-  expect(store.getScheduledBlock(blockId).status).toBe('cancelled');
-});
-```
-
-- [ ] **Step 5: Implement scheduler**
-
-Scheduler responsibilities:
-
-- on startup, read pending blocks from SQLite;
-- on each tick, select due blocks;
-- reload current config;
-- rerun classification with current whitelist/never-block and port/protocol;
-- cancel if classification is now `allow` or `ignored`;
-- skip firewall when `dryRun` or `notifyOnly`;
-- send scoped command to node-agent;
-- mark block `sent` and upsert `active_blocks`.
-
-- [ ] **Step 6: Run scheduler tests**
-
-Run:
-
-```bash
-npm test -- apps/main/test/main-store.test.ts apps/main/test/block-scheduler.test.ts
-```
-
-Expected: PASS.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add apps/main/src/storage apps/main/src/orchestration apps/main/test
-git commit -m "feat: add main block scheduler storage"
-```
-
----
-
-### Task 9: Main Server Orchestration API
-
-**Files:**
-- Create: `apps/main/src/app.ts`
-- Create: `apps/main/src/api/routes.ts`
-- Create: `apps/main/src/orchestration/connection-orchestrator.ts`
-- Create: `apps/main/src/clients/node-agent-client.ts`
-- Create: `apps/main/src/index.ts`
-- Test: `apps/main/test/connection-api.test.ts`
-- Test: `apps/main/test/connection-orchestrator.test.ts`
-
-- [ ] **Step 1: Write failing API auth and ingestion tests**
-
-```ts
-import { describe, expect, it } from 'vitest';
-import { buildMainApp } from '../src/app.js';
-import { createMainStore } from '../src/storage/main-store.js';
-
-function testDeps(overrides = {}) {
-  const store = createMainStore(':memory:');
-  return {
-    config: {
-      server: { dryRun: false, notifyOnly: false },
-      nodes: [
-        { name: 'server-a', role: 'primary', token: 'server-a-token', url: 'http://server-a:8080' },
-        { name: 'server-b', role: 'fallback', token: 'server-b-token', url: 'http://server-b:8080' },
-      ],
-      softBlock: { dropDelaySec: 30, blockDurationSec: 3600 },
-    },
-    store,
-    decision: { action: 'allow', reason: 'allowed', scope: { ip: '203.0.113.10', port: 443, protocol: 'tcp' } },
-    telegram: { notifyUser: async () => undefined, notifyAdmin: async () => undefined },
-    remnawave: { findUser: async () => null },
-    ...overrides,
-  };
-}
-
-describe('main connection API', () => {
-  it('rejects unknown node token', async () => {
-    const app = await buildMainApp(testDeps());
-    const response = await app.inject({ method: 'POST', url: '/events/connection', headers: { authorization: 'Bearer bad' }, payload: {} });
-    expect(response.statusCode).toBe(401);
-  });
-
-  it('stores fallback event and schedules scoped block', async () => {
-    const deps = testDeps({ decision: { action: 'block_scheduled', reason: 'asn_not_allowed', scope: { ip: '203.0.113.10', port: 443, protocol: 'tcp' } } });
-    const app = await buildMainApp(deps);
-    const response = await app.inject({
-      method: 'POST',
-      url: '/events/connection',
-      headers: { authorization: 'Bearer server-b-token' },
-      payload: { eventId: 'e1', nodeName: 'server-b', nodeRole: 'fallback', clientIp: '203.0.113.10', port: 443, protocol: 'tcp', inboundTag: 'backup', timestamp: '2026-05-11T12:00:00.000Z' },
+      blockDurationSec: 3600,
+      cooldownSec: 1800,
+      asnDb: { lookup: () => ({ asn: 31133, name: 'Yota', cidr: '203.0.113.0/24' }) },
+      firewall,
+      telegram,
+      logger: silentLogger(),
+      now: () => 1000,
     });
-    expect(response.statusCode).toBe(200);
-    expect(response.json().decision).toBe('block_scheduled');
-    expect(deps.store.listPendingBlocks()[0]).toMatchObject({ nodeName: 'server-b', ip: '203.0.113.10', port: 443, protocol: 'tcp' });
+    await agent.handleConnection({ clientIp: '203.0.113.10', protocol: 'tcp', rawLine: 'line', timestamp: '2026-05-11T12:00:00.000Z' });
+    expect(firewall.blockIp).not.toHaveBeenCalled();
+    expect(telegram.send).not.toHaveBeenCalled();
+  });
+
+  it('blocks disallowed ASN and alerts admin once during cooldown', async () => {
+    const firewall = { blockIp: vi.fn(), unblockIp: vi.fn(), isBlocked: vi.fn() };
+    const telegram = { send: vi.fn() };
+    const agent = new TrafficGuardAgent({
+      nodeName: 'server-a',
+      dryRun: false,
+      allowedAsns: [31133],
+      blockDurationSec: 3600,
+      cooldownSec: 1800,
+      asnDb: { lookup: () => ({ asn: 64500, name: 'Datacenter', cidr: '198.51.100.0/24' }) },
+      firewall,
+      telegram,
+      logger: silentLogger(),
+      now: () => 1000,
+    });
+    await agent.handleConnection({ clientIp: '198.51.100.10', protocol: 'tcp', rawLine: 'line', timestamp: '2026-05-11T12:00:00.000Z' });
+    await agent.handleConnection({ clientIp: '198.51.100.10', protocol: 'tcp', rawLine: 'line', timestamp: '2026-05-11T12:00:01.000Z' });
+    expect(firewall.blockIp).toHaveBeenCalledTimes(1);
+    expect(telegram.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not call firewall in dry_run but still alerts admin', async () => {
+    const firewall = { blockIp: vi.fn(), unblockIp: vi.fn(), isBlocked: vi.fn() };
+    const telegram = { send: vi.fn() };
+    const agent = new TrafficGuardAgent({
+      nodeName: 'server-a',
+      dryRun: true,
+      allowedAsns: [31133],
+      blockDurationSec: 3600,
+      cooldownSec: 1800,
+      asnDb: { lookup: () => ({ asn: null }) },
+      firewall,
+      telegram,
+      logger: silentLogger(),
+      now: () => 1000,
+    });
+    await agent.handleConnection({ clientIp: '198.51.100.10', protocol: 'tcp', rawLine: 'line', timestamp: '2026-05-11T12:00:00.000Z' });
+    expect(firewall.blockIp).not.toHaveBeenCalled();
+    expect(telegram.send).toHaveBeenCalledTimes(1);
   });
 });
 ```
 
-- [ ] **Step 2: Run API tests to verify failure**
+- [ ] **Step 2: Run test to verify failure**
 
 Run:
 
 ```bash
-npm test -- apps/main/test/connection-api.test.ts
+npm test -- apps/node-agent/test/agent.test.ts
 ```
 
-Expected: FAIL because Main app is missing.
+Expected: FAIL because agent pipeline is missing.
 
-- [ ] **Step 3: Implement Main Fastify app**
+- [ ] **Step 3: Implement pipeline**
 
-Add dependencies to `apps/main/package.json`: `fastify`, `pino`, `better-sqlite3`, `undici`, `node-cron`, `@flow-guard/shared`, `@flow-guard/config`, `@flow-guard/ip-intel`, `@flow-guard/remnawave`, `@flow-guard/telegram`.
-
-Routes:
+Pipeline:
 
 ```text
-POST /events/connection
-GET /health
-GET /ready
-GET /stats/daily
-GET /blocks
-POST /blocks/:id/cancel
-POST /nodes/:name/block
-POST /nodes/:name/unblock
+connection event -> ASN lookup -> allowlist decision -> log allow/block -> block if not dry_run -> Telegram admin alert with cooldown
 ```
 
-- [ ] **Step 4: Write unknown-user orchestration test**
+State:
 
-```ts
-it('does not call Remnawave when uuid and email are missing', async () => {
-  const deps = testDeps({ decision: { action: 'block_scheduled', reason: 'asn_not_allowed', scope: { ip: '203.0.113.10', port: 443, protocol: 'tcp' } } });
-  const remnawave = { findUser: vi.fn() };
-  const orchestrator = createConnectionOrchestrator({ ...deps, remnawave });
-  await orchestrator.handleConnection({ eventId: 'e1', nodeName: 'server-b', nodeRole: 'fallback', clientIp: '203.0.113.10', port: 443, protocol: 'tcp', inboundTag: 'backup', timestamp: '2026-05-11T12:00:00.000Z' });
-  expect(remnawave.findUser).not.toHaveBeenCalled();
-});
-```
+- in-memory blocked IP keys to avoid repeated block calls;
+- in-memory notification cooldown keys `ip:reason`.
 
-- [ ] **Step 5: Implement orchestrator**
+Errors:
 
-Orchestrator must:
+- ASN lookup errors log `error` and skip block.
+- Firewall errors log `error` and still try Telegram alert.
+- Telegram errors log `error` and do not crash.
 
-- validate event;
-- persist event;
-- classify;
-- update fallback counters when `nodeRole === 'fallback'`;
-- resolve Remnawave only with UUID or email;
-- apply notification cooldown;
-- schedule block in SQLite for suspicious decisions;
-- return `allow`, `ignored`, or `block_scheduled`.
+- [ ] **Step 4: Implement entrypoint**
 
-- [ ] **Step 6: Run Main API tests**
+`apps/node-agent/src/index.ts`:
+
+1. read `TRAFFIC_GUARD_CONFIG` or `config.yaml`;
+2. load config;
+3. create logger;
+4. load ASN database;
+5. create firewall provider; if `dry_run=true`, force dry-run provider;
+6. create Telegram notifier;
+7. start log tail;
+8. on each parsed connection, call agent pipeline.
+
+- [ ] **Step 5: Run tests**
 
 Run:
 
 ```bash
-npm test -- apps/main/test/connection-api.test.ts apps/main/test/connection-orchestrator.test.ts
+npm test -- apps/node-agent/test/agent.test.ts
+npm run typecheck
 ```
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add apps/main
-git commit -m "feat: add main connection orchestration api"
+git add apps/node-agent
+git commit -m "feat: add local traffic guard agent pipeline"
 ```
 
 ---
 
-### Task 10: Remnawave and Telegram Packages
+### Task 9: Observability And Logs
 
 **Files:**
-- Create: `packages/remnawave/src/index.ts`
-- Create: `packages/remnawave/src/client.ts`
-- Create: `packages/telegram/src/index.ts`
-- Create: `packages/telegram/src/notifier.ts`
-- Create: `packages/telegram/src/templates.ts`
-- Create: `packages/telegram/src/cooldown.ts`
-- Test: `packages/remnawave/test/client.test.ts`
-- Test: `packages/telegram/test/cooldown.test.ts`
-- Test: `packages/telegram/test/templates.test.ts`
-
-- [ ] **Step 1: Write failing Remnawave tests**
-
-```ts
-it('maps Remnawave user response to traffic guard user', async () => {
-  const client = new RemnawaveClient({
-    apiUrl: 'https://rw.example',
-    apiToken: 'token',
-    fetch: async () => new Response(JSON.stringify({ uuid: 'u1', email: 'user@example.com', telegramId: 12345, status: 'ACTIVE' }), { status: 200 }),
-  });
-  await expect(client.findUser({ uuid: 'u1' })).resolves.toEqual({ uuid: 'u1', email: 'user@example.com', telegramId: '12345', status: 'ACTIVE' });
-});
-```
-
-- [ ] **Step 2: Write failing Telegram cooldown/template tests**
-
-```ts
-it('uses user id, IP, scoped port, protocol, and reason in cooldown key', () => {
-  expect(buildNotificationCooldownKey({ userId: 'tg1', ip: '203.0.113.10', port: 443, protocol: 'tcp', reason: 'asn_not_allowed' }))
-    .toBe('user:tg1:203.0.113.10:443:tcp:asn_not_allowed');
-});
-
-it('renders fallback admin alert with scoped traffic details', () => {
-  const text = renderAdminAlert({ nodeName: 'server-b', nodeRole: 'fallback', ip: '203.0.113.10', port: 443, protocol: 'tcp', reason: 'asn_not_allowed', userLabel: 'unknown' });
-  expect(text).toContain('server-b');
-  expect(text).toContain('fallback');
-  expect(text).toContain('203.0.113.10:443/tcp');
-});
-```
-
-- [ ] **Step 3: Run package tests to verify failure**
-
-Run:
-
-```bash
-npm test -- packages/remnawave/test packages/telegram/test
-```
-
-Expected: FAIL because clients and templates are missing.
-
-- [ ] **Step 4: Implement Remnawave client**
-
-Use `fetch` injection for tests. Implement `findUser({ uuid, email })` with timeout through `AbortController`. Return `null` on 404. Throw `RemnawaveError` on non-404 failures.
-
-- [ ] **Step 5: Implement Telegram notifier**
-
-Use Telegram Bot API `sendMessage`. Message formatting stays in `templates.ts`. Cooldown logic returns deterministic keys for known and unknown users.
-
-- [ ] **Step 6: Run integration package tests**
-
-Run:
-
-```bash
-npm test -- packages/remnawave/test packages/telegram/test
-```
-
-Expected: PASS.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add packages/remnawave packages/telegram
-git commit -m "feat: add remnawave and telegram integrations"
-```
-
----
-
-### Task 11: Daily Statistics and Reporting
-
-**Files:**
-- Create: `apps/main/src/stats/daily-report.ts`
-- Test: `apps/main/test/daily-report.test.ts`
-
-- [ ] **Step 1: Write failing daily stats test**
-
-```ts
-it('reports fallback usage separately from total connections', () => {
-  const report = buildDailyReport({
-    date: '2026-05-11',
-    totalConnections: 100,
-    fallbackConnections: 25,
-    fallbackUniqueIps: 10,
-    blockedIps: 3,
-    topAsn: [{ asn: 31133, count: 40 }],
-    topCidrs: [{ cidr: '203.0.113.0/24', count: 7 }],
-    topReasons: [{ reason: 'asn_not_allowed', count: 3 }],
-    topPorts: [{ port: 443, protocol: 'tcp', count: 90 }],
-    notifiedUsers: 2,
-    unknownUsers: 1,
-    remnawaveApiErrors: 0,
-    telegramErrors: 0,
-  });
-  expect(report.serverBUsagePercent).toBe(25);
-  expect(report.text).toContain('Fallback connections: 25');
-});
-```
-
-- [ ] **Step 2: Run stats test to verify failure**
-
-Run:
-
-```bash
-npm test -- apps/main/test/daily-report.test.ts
-```
-
-Expected: FAIL because report builder is missing.
-
-- [ ] **Step 3: Implement report builder and cron hook**
-
-`buildDailyReport()` returns structured data plus Telegram-ready text. Main startup registers a daily cron that queries `daily_counters`, renders the report, and sends it to admin chat.
-
-- [ ] **Step 4: Run stats test**
-
-Run:
-
-```bash
-npm test -- apps/main/test/daily-report.test.ts
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add apps/main/src/stats apps/main/test/daily-report.test.ts
-git commit -m "feat: add daily traffic guard reports"
-```
-
----
-
-### Task 12: Observability, Entrypoints, and Healthchecks
-
-**Files:**
-- Create: `packages/observability/src/index.ts`
+- Create/modify: `packages/observability/src/index.ts`
 - Create: `packages/observability/src/logger.ts`
-- Modify: `apps/main/src/index.ts`
-- Modify: `apps/node-agent/src/index.ts`
 - Test: `packages/observability/test/logger.test.ts`
+- Modify: `apps/node-agent/src/agent.ts`
 
 - [ ] **Step 1: Write failing logger test**
 
 ```ts
-it('creates pino logger with configured level', () => {
-  const logger = createLogger({ level: 'debug', service: 'main' });
-  expect(logger.level).toBe('debug');
+import { describe, expect, it } from 'vitest';
+import { createLogger } from '../src/index.js';
+
+describe('logger', () => {
+  it('creates pino logger with service and level', () => {
+    const logger = createLogger({ service: 'node-agent', level: 'debug' });
+    expect(logger.level).toBe('debug');
+  });
 });
 ```
 
-- [ ] **Step 2: Run logger test to verify failure**
+- [ ] **Step 2: Run test to verify failure**
 
 Run:
 
@@ -1375,27 +942,28 @@ Run:
 npm test -- packages/observability/test/logger.test.ts
 ```
 
-Expected: FAIL because logger package is missing.
+Expected: FAIL because logger helper is missing.
 
-- [ ] **Step 3: Implement logger and app entrypoints**
+- [ ] **Step 3: Implement structured logging**
 
-Entrypoints:
+Required event names:
 
-```ts
-const configPath = process.env.TRAFFIC_GUARD_CONFIG ?? 'config.yaml';
-const config = loadMainConfig(configPath);
-const logger = createLogger({ level: config.server.logLevel, service: 'traffic-guard-main' });
-const app = await buildMainApp({ config, logger });
-await app.listen({ host: config.server.host, port: config.server.port });
-```
+- `connection.seen`
+- `asn.lookup`
+- `decision.allow`
+- `decision.block`
+- `firewall.block`
+- `firewall.error`
+- `telegram.alert`
+- `telegram.error`
+- `dry_run.block_skipped`
 
-Node-agent uses `NODE_AGENT_CONFIG` and `loadAgentConfig`.
-
-- [ ] **Step 4: Run typecheck**
+- [ ] **Step 4: Run tests**
 
 Run:
 
 ```bash
+npm test -- packages/observability/test apps/node-agent/test/agent.test.ts
 npm run typecheck
 ```
 
@@ -1404,104 +972,94 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/observability apps/main/src/index.ts apps/node-agent/src/index.ts
-git commit -m "feat: add traffic guard entrypoints"
+git add packages/observability apps/node-agent/src/agent.ts
+git commit -m "feat: add v1 structured logging"
 ```
 
 ---
 
-### Task 13: Docker, Compose, and Documentation
+### Task 10: Docker And Documentation
 
 **Files:**
-- Create: `Dockerfile.main`
 - Create: `Dockerfile.node-agent`
-- Create: `docker-compose.yml`
-- Create: `README.md`
-- Create: `docs/architecture.md`
-- Create: `docs/api.md`
+- Create/modify: `README.md`
 - Create: `docs/installation.md`
-- Create: `docs/nftables.md`
-- Create: `docs/telegram-examples.md`
-- Create: `docs/production.md`
+- Create: `docs/firewall.md`
+- Create: `docs/roadmap.md`
 
-- [ ] **Step 1: Create Dockerfiles**
+- [ ] **Step 1: Create Dockerfile**
 
-`Dockerfile.main` builds workspace, runs `apps/main/dist/index.js`, exposes `3000`, and uses `/app/config.yaml`.
+`Dockerfile.node-agent`:
 
-`Dockerfile.node-agent` builds workspace, runs `apps/node-agent/dist/index.js`, exposes `8080`, mounts `/var/log/xray/access.log` read-only, and documents that nftables requires host capabilities only when not in dry-run.
+- installs production dependencies;
+- builds workspaces;
+- runs `apps/node-agent/dist/index.js`;
+- documents mounts for `/app/config.yaml`, `/app/data/asn.csv`, and `/var/log/xray/access.log`;
+- does not grant privileged mode by default.
 
-- [ ] **Step 2: Create dry-run docker-compose**
+- [ ] **Step 2: Write README**
 
-Compose services:
+README must include:
 
-```yaml
-services:
-  traffic-guard-main:
-    build:
-      context: .
-      dockerfile: Dockerfile.main
-    environment:
-      TRAFFIC_GUARD_CONFIG: /app/config.yaml
-    volumes:
-      - ./config.example.yaml:/app/config.yaml:ro
-      - traffic_guard_data:/app/data
-    ports:
-      - "3000:3000"
+- V1 local-only scope;
+- no Main Server in V1;
+- config example;
+- ASN CSV format `cidr,asn,name`;
+- dry-run first;
+- how to run with `TRAFFIC_GUARD_CONFIG=config.yaml npm run dev:agent`;
+- how to run Docker;
+- Telegram env vars;
+- firewall safety.
 
-  node-agent-a:
-    build:
-      context: .
-      dockerfile: Dockerfile.node-agent
-    environment:
-      NODE_AGENT_CONFIG: /app/node-agent.config.yaml
-    volumes:
-      - ./node-agent.config.example.yaml:/app/node-agent.config.yaml:ro
-    ports:
-      - "8081:8080"
+- [ ] **Step 3: Write firewall docs**
 
-volumes:
-  traffic_guard_data:
+Include nftables setup:
+
+```text
+table inet traffic_guard
+set blocked_ips_v4 { type ipv4_addr; flags timeout; }
+set blocked_ips_v6 { type ipv6_addr; flags timeout; }
+chain input_guard {
+  type filter hook input priority 0; policy accept;
+  ip saddr @blocked_ips_v4 drop
+  ip6 saddr @blocked_ips_v6 drop
+}
 ```
 
-- [ ] **Step 3: Write docs**
+Include ipset setup:
 
-Docs must include:
+```text
+ipset create tg_blocked_v4 hash:ip timeout 3600 -exist
+iptables -I INPUT -m set --match-set tg_blocked_v4 src -j DROP
+```
 
-- Main/Server A/Server B architecture.
-- Server B is fallback/route, not internet egress.
-- API request/response examples.
-- Scoped firewall behavior by `ip + port + protocol`.
-- nftables table/set setup and rollback.
-- Dry-run first rollout.
-- Telegram warning/admin examples.
-- Remnawave env variables.
-- Production recommendations for private networking, tokens, mTLS hardening, backups, and Postgres/Redis upgrade.
+Warn that Traffic Guard only adds/removes elements from owned sets.
 
-- [ ] **Step 4: Verify docs mention safety invariants**
+- [ ] **Step 4: Verify docs mention V1 boundaries**
 
 Run:
 
 ```bash
-rg -n "dry_run|notify_only|ip \\+ port \\+ protocol|fallback|whitelist|never-block|execFile|/firewall/status" README.md docs config.example.yaml node-agent.config.example.yaml
+rg -n "V1|no Main Server|dry_run|allowed_asns|Telegram|nftables|ipset|roadmap" README.md docs config.example.yaml Dockerfile.node-agent
 ```
 
-Expected: output contains matches for every listed invariant.
+Expected: every keyword has at least one match.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add Dockerfile.main Dockerfile.node-agent docker-compose.yml README.md docs config.example.yaml node-agent.config.example.yaml
-git commit -m "docs: add traffic guard deployment guide"
+git add Dockerfile.node-agent README.md docs
+git commit -m "docs: add v1 node agent deployment guide"
 ```
 
 ---
 
-### Task 14: End-to-End Verification
+### Task 11: Full Verification
 
 **Files:**
-- Modify only files required to fix failures discovered by verification.
+- Modify only files required to fix verification failures.
 
-- [ ] **Step 1: Run full test suite**
+- [ ] **Step 1: Run full tests**
 
 Run:
 
@@ -1529,36 +1087,37 @@ Run:
 npm run build
 ```
 
-Expected: PASS and app/package `dist` directories are generated.
+Expected: PASS.
 
-- [ ] **Step 4: Run dry-run services locally**
+- [ ] **Step 4: Run dry-run smoke**
 
-Run:
+Create a local sample config from `config.example.yaml` with `dry_run: true`, a test ASN CSV containing:
+
+```text
+198.51.100.0/24,64500,Datacenter
+203.0.113.0/24,31133,Yota
+```
+
+Start:
 
 ```bash
-docker compose up --build
+TRAFFIC_GUARD_CONFIG=./config.local.yaml npm run dev:agent
+```
+
+Append sample Xray line to the configured log path:
+
+```text
+2026/05/11 12:03:12 198.51.100.10:51422 accepted tcp:example.com:443 [proxy-a]
 ```
 
 Expected:
 
-- Main health at `http://localhost:3000/health` returns 200.
-- Node-agent health at `http://localhost:8081/health` returns 200.
-- Node-agent firewall status returns mode `dry-run` or configured provider mode.
+- log contains `decision.block`;
+- log contains `dry_run.block_skipped`;
+- no firewall command is executed;
+- Telegram alert is attempted unless test config uses a fake token, in which case the error is logged and the agent continues.
 
-- [ ] **Step 5: Send sample fallback event**
-
-Run:
-
-```bash
-curl -sS -X POST http://localhost:3000/events/connection \
-  -H 'Authorization: Bearer server-b-token' \
-  -H 'Content-Type: application/json' \
-  -d '{"eventId":"smoke-1","nodeName":"server-b","nodeRole":"fallback","clientIp":"203.0.113.10","port":443,"protocol":"tcp","inboundTag":"backup","timestamp":"2026-05-11T12:00:00.000Z"}'
-```
-
-Expected: JSON response contains `accepted: true` and a decision. Logs show unknown-user mode without Remnawave lookup failure.
-
-- [ ] **Step 6: Verify git status**
+- [ ] **Step 5: Check unrelated changes**
 
 Run:
 
@@ -1566,19 +1125,32 @@ Run:
 git status --short
 ```
 
-Expected: only intentional source/docs changes are present. Do not revert unrelated parent-worktree changes.
+Expected: no unintended changes under `balancer`; ignore unrelated dirty files in parent worktree.
 
-- [ ] **Step 7: Commit final fixes**
+- [ ] **Step 6: Commit final fixes if needed**
 
 ```bash
-git add .
-git commit -m "test: verify traffic guard monorepo"
+git add apps packages README.md docs config.example.yaml Dockerfile.node-agent package.json package-lock.json tsconfig.json
+git commit -m "test: verify v1 traffic guard agent"
 ```
 
 ---
 
-## Self-Review Notes
+## Review Checkpoints
 
-- Spec coverage: tasks cover monorepo bootstrap, shared DTOs, config, ip-intel, scoped firewall, node-agent API, parser unknown-user mode, Main API, delayed SQLite scheduler, reclassification before block, Remnawave, Telegram, daily fallback stats, Docker, docs, and verification.
-- Safety coverage: whitelist/never-block precedence is in Task 4; dry-run/notify-only firewall bypass is in Tasks 5 and 8; `execFile` argv use is in Task 5; scoped `ip + port + protocol` blocks are in Tasks 2, 5, 6, 8, 9, and docs; `/firewall/status` is in Tasks 5 and 6; unknown-user mode is in Tasks 7 and 9.
-- Type consistency: shared scope fields are always `ip`, `port`, and `protocol`; node roles are `primary` and `fallback`; block statuses are `pending`, `sent`, `cancelled`, `expired`, and `failed`.
+After each major task, report:
+
+- what was done;
+- tests added;
+- invariants covered;
+- technical debt or TODO.
+
+Required V1 invariants:
+
+- `dry_run` never calls firewall commands.
+- Firewall providers use `execFile` argv only, never shell.
+- Block targets are single validated IPs, not CIDRs or hostnames.
+- Telegram cooldown prevents repeated admin spam by `ip + reason`.
+- ASN unknown is blocked by default.
+- Telegram/firewall errors are logged and do not crash log processing.
+- Unrelated files and parent worktree changes are not touched.
