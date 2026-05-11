@@ -1,0 +1,14 @@
+{
+  "files": [],
+  "references": [
+    { "path": "apps/main" },
+    { "path": "apps/node-agent" },
+    { "path": "packages/shared" },
+    { "path": "packages/config" },
+    { "path": "packages/ip-intel" },
+    { "path": "packages/firewall" },
+    { "path": "packages/remnawave" },
+    { "path": "packages/telegram" },
+    { "path": "packages/observability" }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "name": "flow-proxy-traffic-guard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -b",
+    "lint": "tsc -b --pretty false",
+    "dev:main": "tsx apps/main/src/index.ts",
+    "dev:agent": "tsx apps/node-agent/src/index.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsup": "^8.4.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.1.0"
+  }
+}

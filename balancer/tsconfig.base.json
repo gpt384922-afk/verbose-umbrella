@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "outDir": "dist",
+    "baseUrl": ".",
+    "paths": {
+      "@flow-guard/shared": ["packages/shared/src/index.ts"],
+      "@flow-guard/config": ["packages/config/src/index.ts"],
+      "@flow-guard/ip-intel": ["packages/ip-intel/src/index.ts"],
+      "@flow-guard/firewall": ["packages/firewall/src/index.ts"],
+      "@flow-guard/remnawave": ["packages/remnawave/src/index.ts"],
+      "@flow-guard/telegram": ["packages/telegram/src/index.ts"],
+      "@flow-guard/observability": ["packages/observability/src/index.ts"]
+    }
+  }
+}
