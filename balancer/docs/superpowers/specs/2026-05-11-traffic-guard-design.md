@@ -113,6 +113,7 @@ Postgres, Redis, and a persistent queue are documented production upgrades, not 
 - delayed block jobs survive Main Server restart through SQLite state.
 - node-agent has local cleanup for expired blocks if Main Server is unavailable.
 - no global drop rules or broad firewall mutations are allowed.
+- firewall blocks are scoped by `ip + port + protocol` whenever the connection event includes port/protocol, so Traffic Guard does not block unrelated customer traffic.
 
 ## Data Flow
 
@@ -128,14 +129,15 @@ Postgres, Redis, and a persistent queue are documented production upgrades, not 
    - blocked ASN list;
    - suspicious/datacenter/gov/anti-scan lists.
 6. If allowed, Main Server updates statistics only.
-7. If suspicious, Main Server resolves the user through event fields and Remnawave API.
+7. If suspicious, Main Server resolves the user through event fields and Remnawave API when UUID or email is available. Unknown-user events do not fail lookup; they continue with an unknown-user correlation key.
 8. Main Server sends Telegram warning to the user when Telegram ID is known.
 9. Main Server sends admin alert subject to admin cooldown.
 10. Main Server stores a delayed block job in SQLite.
-11. After `drop_delay_sec`, Main Server rechecks state and sends `POST /block` to the relevant node-agent unless dry-run or notify-only is active.
-12. node-agent validates the command and applies a targeted firewall block.
-13. Main Server schedules unblock for `block_duration_sec`.
-14. node-agent also performs local expiry cleanup so blocks do not become permanent if Main Server is down.
+11. After `drop_delay_sec`, Main Server reloads the current config, reruns whitelist/never-block and classification for the same IP/ASN/CIDR/port/protocol context, and cancels the block if the IP is now allowed.
+12. If still blockable, Main Server sends `POST /block` to the relevant node-agent unless dry-run or notify-only is active.
+13. node-agent validates the command and applies a targeted firewall block scoped to `ip + port + protocol`.
+14. Main Server schedules unblock for `block_duration_sec`.
+15. node-agent also performs local expiry cleanup so blocks do not become permanent if Main Server is down.
 
 ## Main Server API
 
@@ -192,8 +194,8 @@ Response:
 - `GET /stats/daily?date=YYYY-MM-DD`: daily stats snapshot.
 - `GET /blocks`: current and scheduled blocks.
 - `POST /blocks/:id/cancel`: cancel scheduled or active block and unblock if needed.
-- `POST /nodes/:name/block`: admin/manual block, still validates IP and reason.
-- `POST /nodes/:name/unblock`: admin/manual unblock.
+- `POST /nodes/:name/block`: admin/manual block, still validates IP, port, protocol, and reason.
+- `POST /nodes/:name/unblock`: admin/manual unblock for a scoped `ip + port + protocol` block.
 
 Admin endpoints use a separate admin token.
 
@@ -210,6 +212,8 @@ Body:
 ```json
 {
   "ip": "203.0.113.10",
+  "port": 443,
+  "protocol": "tcp",
   "durationSec": 3600,
   "reason": "blocked_asn",
   "correlationId": "01HX...",
@@ -220,8 +224,9 @@ Body:
 Behavior:
 
 - validate IP as a single IPv4 or IPv6 address;
+- validate `port` as 1-65535 and `protocol` as `tcp|udp`;
 - reject CIDR, hostnames, empty strings, and shell metacharacters by schema and parser;
-- no-op if already blocked with same or later expiry;
+- no-op if the same `ip + port + protocol` is already blocked with same or later expiry;
 - call `FirewallProvider.blockIp()`, unless dry-run;
 - persist active block with expiry and reason.
 
@@ -232,6 +237,8 @@ Body:
 ```json
 {
   "ip": "203.0.113.10",
+  "port": 443,
+  "protocol": "tcp",
   "correlationId": "01HX...",
   "reason": "expired|manual|cancelled"
 }
@@ -240,7 +247,8 @@ Body:
 Behavior:
 
 - validate IP;
-- remove from nftables set;
+- validate `port` and `protocol`;
+- remove scoped block from nftables set;
 - mark local block inactive.
 
 ### Health and Stats
@@ -248,6 +256,7 @@ Behavior:
 - `GET /health`: process status, firewall provider status, log tail status.
 - `GET /stats`: counters since start and persisted active counts.
 - `GET /active-blocks`: active block list with expiry and reason.
+- `GET /firewall/status`: firewall provider mode, nftables binary path, table readiness, set readiness, chain readiness, and last verification error.
 
 ## Firewall Design
 
@@ -257,8 +266,9 @@ Interface:
 interface FirewallProvider {
   blockIp(input: BlockIpInput): Promise<FirewallResult>;
   unblockIp(input: UnblockIpInput): Promise<FirewallResult>;
-  isBlocked(ip: string): Promise<boolean>;
+  isBlocked(input: FirewallScope): Promise<boolean>;
   listBlocks(): Promise<ActiveFirewallBlock[]>;
+  getStatus(): Promise<FirewallStatus>;
 }
 ```
 
@@ -271,16 +281,20 @@ The nftables provider creates or verifies a dedicated table and set, for example
 
 ```text
 table inet traffic_guard
-set blocked_ips_v4 { type ipv4_addr; flags timeout; }
-set blocked_ips_v6 { type ipv6_addr; flags timeout; }
+set blocked_tcp_v4 { type ipv4_addr . inet_service; flags timeout; }
+set blocked_udp_v4 { type ipv4_addr . inet_service; flags timeout; }
+set blocked_tcp_v6 { type ipv6_addr . inet_service; flags timeout; }
+set blocked_udp_v6 { type ipv6_addr . inet_service; flags timeout; }
 chain input_guard {
   type filter hook input priority 0; policy accept;
-  ip saddr @blocked_ips_v4 drop
-  ip6 saddr @blocked_ips_v6 drop
+  ip protocol tcp ip saddr . tcp dport @blocked_tcp_v4 drop
+  ip protocol udp ip saddr . udp dport @blocked_udp_v4 drop
+  ip6 nexthdr tcp ip6 saddr . tcp dport @blocked_tcp_v6 drop
+  ip6 nexthdr udp ip6 saddr . udp dport @blocked_udp_v6 drop
 }
 ```
 
-The provider only adds/removes elements from Traffic Guard-owned sets. It does not flush existing tables, change default policies, or mutate Docker/Xray/Remnawave rules.
+The provider only adds/removes scoped elements from Traffic Guard-owned sets. It does not flush existing tables, change default policies, or mutate Docker/Xray/Remnawave rules.
 
 All command execution uses `execFile(binary, args)` without shell.
 
@@ -374,8 +388,11 @@ firewall:
   provider: nftables
   nft_binary: /usr/sbin/nft
   table_name: traffic_guard
-  ipv4_set_name: blocked_ips_v4
-  ipv6_set_name: blocked_ips_v6
+  scoped_sets:
+    tcp_ipv4: blocked_tcp_v4
+    udp_ipv4: blocked_udp_v4
+    tcp_ipv6: blocked_tcp_v6
+    udp_ipv6: blocked_udp_v6
 ```
 
 ## Remnawave Integration
@@ -391,6 +408,23 @@ Required behavior:
 - structured errors counted in API error stats.
 
 The exact endpoints will be implemented behind the client so the rest of Main Server does not depend on raw Remnawave response shapes.
+
+Unknown-user mode:
+
+- if `userUuid` and `email` are both absent, Main Server does not call Remnawave lookup;
+- the event is classified, notified to admin if needed, and stored as unknown user;
+- correlation key is built from `clientIp + nodeName + inboundTag + timeWindow`, where `timeWindow` is a small rounded timestamp window used only for grouping repeated unknown events;
+- unknown-user mode must never throw only because a user cannot be mapped.
+
+## Log Parser
+
+The node-agent log parser is tolerant by default:
+
+- parse connection IP, inbound tag, target, port, protocol, timestamp, and any user identifier exposed by the log line;
+- when `userUuid` or `email` is missing, emit a valid unknown-user event instead of dropping the line;
+- build `correlationId` from `clientIp + nodeName + inboundTag + timeWindow` for unknown-user events;
+- include parser errors in agent stats without crashing the tail loop;
+- keep raw log lines out of normal JSON logs unless debug logging is explicitly enabled.
 
 ## Telegram Notifications
 
@@ -468,7 +502,7 @@ Main SQLite tables:
 - `decisions`: classification decision and reason.
 - `notifications`: sent/skipped notification records and cooldown keys.
 - `scheduled_blocks`: delayed jobs with `pending|sent|cancelled|expired|failed`.
-- `active_blocks`: known active blocks by node and IP.
+- `active_blocks`: known active blocks by node, IP, port, and protocol.
 - `daily_counters`: rollups for reports.
 - `api_errors`: Remnawave/Telegram/node API errors.
 
@@ -476,7 +510,7 @@ On startup, Main Server loads non-terminal scheduled blocks and resumes jobs bas
 
 Node-agent local state:
 
-- `active_blocks`: IP, reason, correlation ID, expiry, applied status.
+- `active_blocks`: IP, port, protocol, reason, correlation ID, expiry, applied status.
 - `agent_counters`: starts, parsed events, sent events, firewall actions, cleanup actions.
 
 On startup, node-agent verifies nftables setup, loads active blocks, removes expired blocks, and reconciles current firewall set where possible.
@@ -495,15 +529,18 @@ Unit tests:
 - Remnawave response mapping;
 - Telegram message generation;
 - scheduler resume from SQLite;
+- delayed block reclassification with current whitelist/never-block config before firewall command;
 - node-agent block idempotency;
 - dry-run and notify-only never calling firewall;
 - firewall provider argv generation without shell.
+- scoped firewall keys by IP, port, and protocol.
 
 Integration tests:
 
 - Main `POST /events/connection` stores event and schedules block.
 - delayed block survives simulated restart.
 - node-agent `POST /block` validates IP and calls dry-run provider.
+- node-agent `GET /firewall/status` reports provider mode and nftables readiness.
 - expired block cleanup runs locally on node-agent.
 - fallback events are counted separately.
 
@@ -511,8 +548,10 @@ Safety tests:
 
 - reject CIDR in `/block`;
 - reject hostnames and shell-looking strings in `/block`;
+- reject invalid ports and protocols in `/block`;
 - reject unknown node tokens;
 - never block configured whitelist IP;
+- cancel scheduled block when whitelist/never-block changes before delay expires;
 - never run nftables command in dry-run/notify-only path.
 
 Manual smoke tests:
