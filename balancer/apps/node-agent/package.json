@@ -6,12 +6,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts"
-  },
-  "dependencies": {
-    "@flow-guard/config": "0.1.0",
-    "@flow-guard/firewall": "0.1.0",
-    "@flow-guard/observability": "0.1.0",
-    "@flow-guard/shared": "0.1.0"
+    "build": "tsup src/index.ts --format esm --dts",
+    "test": "vitest run --root ../.."
   }
 }
