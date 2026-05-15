@@ -54,13 +54,13 @@ class PrefixCatalogUiTests(unittest.TestCase):
         self.assertIn("⚪", by_callback["hunt:prefix:158.160"])
         self.assertIn("Дальше", by_callback["hunt:prefix_done"])
 
-    def test_hunt_target_step_selects_one_to_five_matching_vms_per_cloud(self) -> None:
+    def test_hunt_target_step_selects_one_to_five_matching_vms_per_hunt(self) -> None:
         text = _hunt_target_text()
         markup = target_keyboard().as_markup()
         buttons = [button for row in markup.inline_keyboard for button in row]
         by_callback = {button.callback_data: button.text for button in buttons}
 
-        self.assertIn("Сколько VM максимум оставить с нужным префиксом на каждое облако?", text)
+        self.assertIn("Сколько VM с нужным префиксом нужно поймать за хант?", text)
         for count in range(1, 6):
             self.assertIn(f"hunt:target:{count}", by_callback)
             self.assertIn(f"{count} VM", by_callback[f"hunt:target:{count}"])
@@ -99,7 +99,7 @@ class PrefixCatalogUiTests(unittest.TestCase):
         self.assertIn("Уже есть IP", text)
         self.assertIn("158.160.10.20", text)
         self.assertIn("cloud-a", text)
-        self.assertIn("1 VM с нужным префиксом на каждое облако", text)
+        self.assertIn("1 VM с нужным префиксом за хант", text)
 
     def test_hunt_confirm_text_shows_empty_preflight_result(self) -> None:
         text = _hunt_confirm_text(
@@ -148,6 +148,33 @@ class PrefixCatalogUiTests(unittest.TestCase):
         self.assertIn("🟢", by_callback["hunt:vm:platform:standard-v3"])
         self.assertIn("🟢", by_callback["hunt:vm:cores:4"])
         self.assertIn("Дальше", by_callback["hunt:vm_done"])
+
+    def test_hunt_vm_config_keyboard_uses_tariff_cards_without_location_or_rent(self) -> None:
+        config = VmHuntConfig(
+            platform_id="standard-v2",
+            cores=2,
+            core_fraction=5,
+            memory_gb=0.5,
+            disk_type_id="network-hdd",
+            disk_size_gb=5,
+        )
+        text = _hunt_vm_config_text(config)
+        markup = hunt_vm_config_keyboard(config).as_markup()
+        buttons = [button for row in markup.inline_keyboard for button in row]
+        by_callback = {button.callback_data: button.text for button in buttons}
+        labels = "\n".join(button.text for button in buttons)
+
+        self.assertIn("Выберите тарифный план", text)
+        self.assertIn("Найти решение", text)
+        self.assertIn("Создать конфиг", text)
+        self.assertNotIn("Локация", text)
+        self.assertNotIn("аренд", text.lower())
+        self.assertIn("SSH", text)
+        self.assertIn("CPU: Intel Cascade Lake", labels)
+        self.assertIn("CPU: 2 | RAM: 0.5 GB | HDD 5 GB | 5% vCPU", labels)
+        self.assertIn("🟢", by_callback["hunt:vm:preset:cascade-tiny"])
+        self.assertIn("1/2", labels)
+        self.assertIn("»", by_callback["hunt:vm_page:1"])
 
     def test_hunt_vm_config_allows_cascade_lake_minimal_resources(self) -> None:
         config = VmHuntConfig(

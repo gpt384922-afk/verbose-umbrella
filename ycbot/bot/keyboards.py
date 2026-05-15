@@ -11,7 +11,9 @@ from ycbot.core.vm_config import (
     ALLOWED_MEMORY_GB,
     DISK_TYPE_LABELS,
     PLATFORM_LABELS,
+    VM_CONFIG_PRESETS,
     VmHuntConfig,
+    matching_vm_config_preset,
 )
 
 
@@ -168,11 +170,30 @@ def target_keyboard() -> InlineKeyboardBuilder:
     return kb
 
 
-def hunt_vm_config_keyboard(config: VmHuntConfig) -> InlineKeyboardBuilder:
+VM_CONFIG_PRESET_PAGE_SIZE = 3
+
+
+def hunt_vm_config_keyboard(config: VmHuntConfig, *, page: int = 0) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
+    page_count = max(1, (len(VM_CONFIG_PRESETS) + VM_CONFIG_PRESET_PAGE_SIZE - 1) // VM_CONFIG_PRESET_PAGE_SIZE)
+    page = max(0, min(page, page_count - 1))
+    selected_preset = matching_vm_config_preset(config)
+
     for platform_id, label in PLATFORM_LABELS.items():
         marker = "🟢" if config.platform_id == platform_id else "⚪"
-        kb.button(text=f"{marker} {label}", callback_data=f"hunt:vm:platform:{platform_id}")
+        kb.button(text=f"{marker} CPU: {label}", callback_data=f"hunt:vm:platform:{platform_id}")
+
+    start = page * VM_CONFIG_PRESET_PAGE_SIZE
+    for preset in VM_CONFIG_PRESETS[start:start + VM_CONFIG_PRESET_PAGE_SIZE]:
+        marker = "🟢" if selected_preset and selected_preset.id == preset.id else "⚪"
+        kb.button(text=f"{marker} {preset.button_label}", callback_data=f"hunt:vm:preset:{preset.id}")
+
+    prev_page = max(0, page - 1)
+    next_page = min(page_count - 1, page + 1)
+    kb.button(text="«", callback_data=f"hunt:vm_page:{prev_page}")
+    kb.button(text=f"{page + 1}/{page_count}", callback_data="hunt:vm:noop:page")
+    kb.button(text="»", callback_data=f"hunt:vm_page:{next_page}")
+
     for cores in ALLOWED_CORES:
         marker = "🟢" if config.cores == cores else "⚪"
         kb.button(text=f"{marker} {cores} vCPU", callback_data=f"hunt:vm:cores:{cores}")
@@ -191,7 +212,7 @@ def hunt_vm_config_keyboard(config: VmHuntConfig) -> InlineKeyboardBuilder:
     kb.button(text="Дальше", callback_data="hunt:vm_done", style="success")
     kb.button(text="Назад", callback_data="hunt:back:target")
     kb.button(text="Отмена", callback_data="hunt:cancel", style="danger")
-    kb.adjust(1, 1, 1, 3, 5, 3, 5, 4, 1, 1, 1)
+    kb.adjust(1, 1, 1, 1, 1, 1, 3, 3, 5, 3, 5, 4, 1, 1, 1)
     return kb
 
 

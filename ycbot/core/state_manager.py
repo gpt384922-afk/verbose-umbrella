@@ -154,6 +154,8 @@ class StateManager:
             state = self._require(job_id)
             if any(existing.address_id == match.address_id for existing in state.matches):
                 return False
+            if len(state.matches) >= state.target_count:
+                return False
             state.matches.append(match)
             cloud = state.cloud_states.get(match.cloud_id)
             if cloud:

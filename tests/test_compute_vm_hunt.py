@@ -14,7 +14,7 @@ from ycbot.core.hunter import MatchNotification
 from ycbot.core.ssh_keys import generate_ssh_keypair
 from ycbot.core.vm_config import VmHuntConfig
 from ycbot.core.scheduler import HuntScheduler, HuntStartScope
-from ycbot.core.state_manager import CloudLifecycle
+from ycbot.core.state_manager import CloudLifecycle, CloudState, MatchState, StateManager
 from ycbot.db.enums import CloudState as DbCloudState
 from ycbot.yc import Address, YcApiError
 from ycbot.yc.compute import ComputeApi, Instance
@@ -779,13 +779,153 @@ class HunterVmBatchTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HunterScopeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
-    async def test_run_scope_hunts_ready_clouds_concurrently(self) -> None:
+    async def test_all_scope_targets_use_global_job_match_count(self) -> None:
+        state = StateManager()
+        await state.create_hunt("job-1", ["84.201"], 2)
+        await state.register_cloud(
+            "job-1",
+            CloudState(
+                account_id="acc-1",
+                organization_id="org-1",
+                cloud_id="cloud-1",
+                cloud_name="Cloud 1",
+                folder_id="folder-1",
+                billing_account_id="billing-1",
+            ),
+        )
+        await state.register_cloud(
+            "job-1",
+            CloudState(
+                account_id="acc-1",
+                organization_id="org-2",
+                cloud_id="cloud-2",
+                cloud_name="Cloud 2",
+                folder_id="folder-2",
+                billing_account_id="billing-1",
+            ),
+        )
+        await state.add_match(
+            "job-1",
+            MatchState(
+                account_id="acc-1",
+                organization_id="org-1",
+                cloud_id="cloud-1",
+                address_id="vm:vm-1",
+                ip="84.201.10.1",
+                prefix="84.201",
+                preexisting=False,
+            ),
+        )
+        await state.add_match(
+            "job-1",
+            MatchState(
+                account_id="acc-1",
+                organization_id="org-1",
+                cloud_id="cloud-1",
+                address_id="vm:vm-2",
+                ip="84.201.10.2",
+                prefix="84.201",
+                preexisting=False,
+            ),
+        )
+        accepted_after_target = await state.add_match(
+            "job-1",
+            MatchState(
+                account_id="acc-1",
+                organization_id="org-2",
+                cloud_id="cloud-2",
+                address_id="vm:vm-3",
+                ip="84.201.10.3",
+                prefix="84.201",
+                preexisting=False,
+            ),
+        )
+        hunter = HunterEngine(
+            settings=SimpleNamespace(hunt_cloud_target_count=5),
+            db=SimpleNamespace(),
+            state=state,
+            semaphore=asyncio.Semaphore(16),
+            logger=logging.getLogger("test"),
+        )
+
+        reached = await hunter._all_scope_targets_reached(
+            "job-1",
+            [
+                ScopeDescriptor(account_id="acc-1", organization_id="org-1"),
+                ScopeDescriptor(account_id="acc-1", organization_id="org-2"),
+            ],
+        )
+
+        self.assertFalse(accepted_after_target)
+        self.assertTrue(reached)
+
+    async def test_ensure_scope_clouds_creates_only_one_active_hunt_cloud(self) -> None:
+        state = SimpleNamespace()
+        state.get_hunt = AsyncMock(return_value=SimpleNamespace(cloud_states={}))
+        state.register_cloud = AsyncMock()
+        hunter = HunterEngine(
+            settings=SimpleNamespace(
+                hunt_cloud_target_count=5,
+            ),
+            db=SimpleNamespace(),
+            state=state,
+            semaphore=asyncio.Semaphore(16),
+            logger=logging.getLogger("test"),
+        )
+        hunter._upsert_cloud_row = AsyncMock()
+        hunter._cloud_has_saved_match = AsyncMock(return_value=False)
+
+        class FakeCloudsApi:
+            def __init__(self):
+                self.created = []
+
+            async def list_billing_accounts(self):
+                return [SimpleNamespace(id="billing-1", active=True)]
+
+            async def resolve_cloud_billing_map(self, active_billing):
+                return {}
+
+            async def resolve_organization_billing_map(self, active_billing):
+                return {"org-1": "billing-1"}
+
+            async def list_clouds(self, organization_id):
+                return []
+
+            async def create_cloud_with_folder(self, *, organization_id, name, billing_account_id):
+                cloud = SimpleNamespace(
+                    id=f"cloud-{len(self.created) + 1}",
+                    name=name,
+                    organization_id=organization_id,
+                    state=DbCloudState.ACTIVE,
+                    deleting=False,
+                )
+                folder = SimpleNamespace(id=f"folder-{len(self.created) + 1}", name="Folder")
+                self.created.append((cloud, folder, billing_account_id))
+                return cloud, folder
+
+        clouds_api = FakeCloudsApi()
+
+        candidates, pending_slots = await hunter._ensure_scope_clouds(
+            "job-1",
+            ScopeDescriptor(account_id="acc-1", organization_id="org-1"),
+            clouds_api,
+            SimpleNamespace(),
+            SimpleNamespace(),
+            asyncio.Event(),
+        )
+
+        self.assertEqual(1, len(candidates))
+        self.assertEqual("cloud-1", candidates[0].cloud_id)
+        self.assertEqual(1, len(clouds_api.created))
+        self.assertEqual([], pending_slots)
+
+    async def test_run_scope_hunts_only_one_ready_cloud_at_a_time(self) -> None:
         state = SimpleNamespace()
         state.set_cloud_lifecycle = AsyncMock()
         state.get_hunt = AsyncMock(
             return_value=SimpleNamespace(
                 cloud_states={
-                    f"cloud-{index}": SimpleNamespace(lifecycle=CloudLifecycle.FAILED)
+                    f"cloud-{index}": SimpleNamespace(lifecycle=CloudLifecycle.SUCCESS)
                     for index in range(3)
                 }
             )
@@ -822,10 +962,10 @@ class HunterScopeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.01)
             in_flight -= 1
             completed += 1
-            return False
+            return True
 
         async def scope_targets_reached(*args, **kwargs):
-            return completed >= len(clouds)
+            return completed >= 1
 
         hunter._get_account = AsyncMock(return_value=SimpleNamespace(oauth_token="token", proxy_url=None))
         hunter._ensure_scope_clouds = AsyncMock(return_value=(clouds, []))
@@ -863,8 +1003,9 @@ class HunterScopeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                 VmHuntConfig.default(),
             )
 
-        self.assertEqual(len(clouds), hunter._hunt_cloud_once.await_count)
-        self.assertGreater(max_in_flight, 1)
+        self.assertEqual(1, hunter._hunt_cloud_once.await_count)
+        self.assertEqual(1, max_in_flight)
+        hunter._delete_cloud_for_replacement.assert_not_awaited()
 
 
 class NotificationVmTests(unittest.TestCase):

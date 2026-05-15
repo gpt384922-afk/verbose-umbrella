@@ -11,12 +11,20 @@ from ycbot.db.base import Base
 
 class Database:
     def __init__(self, settings: Settings) -> None:
+        engine_options = {
+            "echo": False,
+            "pool_pre_ping": True,
+        }
+        if not settings.database_dsn.startswith("sqlite"):
+            engine_options.update(
+                {
+                    "pool_size": 10,
+                    "max_overflow": 20,
+                }
+            )
         self._engine = create_async_engine(
             settings.database_dsn,
-            echo=False,
-            pool_pre_ping=True,
-            pool_size=10,
-            max_overflow=20,
+            **engine_options,
         )
         self._session_factory = async_sessionmaker(
             self._engine,

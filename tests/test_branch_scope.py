@@ -31,8 +31,8 @@ class BranchScopeUiTests(unittest.TestCase):
                 "status": "running",
                 "prefixes": ["84.201"],
                 "target_count": 1,
-                "target_total": 5,
-                "match_count": 2,
+                "target_total": 1,
+                "match_count": 1,
                 "runtime_seconds": 125,
                 "checked_ip_count": 17,
                 "active_cloud_count": 3,
@@ -52,7 +52,7 @@ class BranchScopeUiTests(unittest.TestCase):
         self.assertIn("время работы", lowered)
         self.assertIn("перебрано ip", lowered)
         self.assertIn("активных облаков", lowered)
-        self.assertIn("1 vm с нужным префиксом на cloud", lowered)
+        self.assertIn("1/1 vm с нужным префиксом", lowered)
         self.assertNotIn("удален", lowered)
         self.assertNotIn("удал", lowered)
 

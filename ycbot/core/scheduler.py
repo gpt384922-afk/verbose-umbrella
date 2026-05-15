@@ -612,17 +612,13 @@ class HuntScheduler:
             if hunt.job_id not in scope_counts:
                 continue
             status_counts = Counter(cloud.lifecycle for cloud in hunt.cloud_states.values())
-            target_cloud_count = max(
-                1,
-                scope_counts.get(hunt.job_id, 0) * self.settings.hunt_cloud_target_count,
-            )
             rows.append(
                 {
                     "job_id": hunt.job_id,
                     "status": hunt.status.value,
                     "prefixes": hunt.prefixes,
                     "target_count": hunt.target_count,
-                    "target_total": hunt.target_count * max(1, target_cloud_count),
+                    "target_total": hunt.target_count,
                     "match_count": len(hunt.matches),
                     "cloud_stats": {state.value: count for state, count in status_counts.items()},
                     "error": hunt.error,
@@ -651,8 +647,7 @@ class HuntScheduler:
                 "status": job.status.value,
                 "prefixes": list(job.target_prefixes),
                 "target_count": job.requested_ip_count,
-                "target_total": job.requested_ip_count
-                * max(1, len(scopes) * self.settings.hunt_cloud_target_count),
+                "target_total": job.requested_ip_count,
                 "match_count": job.match_count,
                 "runtime_seconds": runtime_seconds,
                 "checked_ip_count": checked_ip_count,
@@ -696,8 +691,7 @@ class HuntScheduler:
             "status": hunt.status.value,
             "prefixes": hunt.prefixes,
             "target_count": hunt.target_count,
-            "target_total": hunt.target_count
-            * max(1, len(scopes) * self.settings.hunt_cloud_target_count),
+            "target_total": hunt.target_count,
             "match_count": len(hunt.matches),
             "runtime_seconds": self._runtime_seconds(hunt.started_at, hunt.completed_at),
             "checked_ip_count": sum(len(cloud.checked_ips) for cloud in hunt.cloud_states.values()),
@@ -873,7 +867,7 @@ class HuntScheduler:
             await self._upsert_cloud(managed_cloud)
 
         if ensure_capacity:
-            target = self.settings.hunt_cloud_target_count
+            target = 1
             total_slots = len(managed) + blocked_slots + protected_slots
             if primary_billing and len(managed) < target and total_slots < target:
                 missing = target - total_slots

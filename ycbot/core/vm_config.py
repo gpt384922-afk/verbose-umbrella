@@ -92,3 +92,103 @@ class VmHuntConfig:
     @property
     def disk_type_label(self) -> str:
         return DISK_TYPE_LABELS[self.disk_type_id]
+
+
+@dataclass(frozen=True, slots=True)
+class VmConfigPreset:
+    id: str
+    title: str
+    config: VmHuntConfig
+
+    @property
+    def button_label(self) -> str:
+        memory = f"{self.config.memory_gb:g}"
+        return (
+            f"CPU: {self.config.cores} | RAM: {memory} GB | "
+            f"{self.config.disk_type_label} {self.config.disk_size_gb} GB | "
+            f"{self.config.core_fraction}% vCPU"
+        )
+
+
+VM_CONFIG_PRESETS = (
+    VmConfigPreset(
+        id="amd-small",
+        title="AMD Zen 4 старт",
+        config=VmHuntConfig(
+            platform_id="standard-v4a",
+            cores=2,
+            core_fraction=20,
+            memory_gb=1,
+            disk_type_id="network-hdd",
+            disk_size_gb=10,
+        ),
+    ),
+    VmConfigPreset(
+        id="cascade-tiny",
+        title="Минимальный Cascade Lake",
+        config=VmHuntConfig(
+            platform_id="standard-v2",
+            cores=2,
+            core_fraction=5,
+            memory_gb=0.5,
+            disk_type_id="network-hdd",
+            disk_size_gb=5,
+        ),
+    ),
+    VmConfigPreset(
+        id="ice-balanced",
+        title="Intel Ice Lake баланс",
+        config=VmHuntConfig(
+            platform_id="standard-v3",
+            cores=4,
+            core_fraction=50,
+            memory_gb=2,
+            disk_type_id="network-ssd",
+            disk_size_gb=20,
+        ),
+    ),
+    VmConfigPreset(
+        id="amd-mid",
+        title="AMD Zen 4 средний",
+        config=VmHuntConfig(
+            platform_id="standard-v4a",
+            cores=4,
+            core_fraction=20,
+            memory_gb=4,
+            disk_type_id="network-hdd",
+            disk_size_gb=40,
+        ),
+    ),
+    VmConfigPreset(
+        id="ice-fast",
+        title="Intel Ice Lake SSD",
+        config=VmHuntConfig(
+            platform_id="standard-v3",
+            cores=4,
+            core_fraction=100,
+            memory_gb=4,
+            disk_type_id="network-ssd",
+            disk_size_gb=40,
+        ),
+    ),
+    VmConfigPreset(
+        id="amd-large",
+        title="AMD Zen 4 максимум",
+        config=VmHuntConfig(
+            platform_id="standard-v4a",
+            cores=8,
+            core_fraction=100,
+            memory_gb=8,
+            disk_type_id="network-ssd",
+            disk_size_gb=80,
+        ),
+    ),
+)
+
+
+def vm_config_preset(preset_id: str) -> VmConfigPreset | None:
+    return next((item for item in VM_CONFIG_PRESETS if item.id == preset_id), None)
+
+
+def matching_vm_config_preset(config: VmHuntConfig) -> VmConfigPreset | None:
+    return next((item for item in VM_CONFIG_PRESETS if item.config == config), None)

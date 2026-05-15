@@ -242,8 +242,7 @@ class HunterEngine:
                                 return
                         continue
 
-                    batch = candidates
-                    candidates = []
+                    batch = [candidates.pop(0)]
                     hunt_tasks = [
                         (
                             cloud,
@@ -446,8 +445,9 @@ class HunterEngine:
             if stop_event.is_set():
                 return keep_clouds, []
 
-        # YC counts deleting clouds against the org cloud quota. Create only free slots.
-        target = self.settings.hunt_cloud_target_count
+        # YC counts deleting clouds against the org cloud quota. Keep only one active
+        # hunting cloud per scope; successful clouds may remain preserved with matches.
+        target = 1
         total_slots = len(keep_clouds) + blocked_slots + protected_slots
         if len(keep_clouds) < target and total_slots < target:
             missing = target - total_slots
@@ -478,8 +478,27 @@ class HunterEngine:
         else:
             pending_slots = []
 
-        # Clouds with preexisting target prefixes stay untouched and are excluded from worker loop.
         candidates = [item for item in keep_clouds if item.cloud_id not in preexisting_cloud_ids]
+        if (
+            not candidates
+            and not stop_event.is_set()
+            and not await self._scope_targets_reached(job_id, scope)
+        ):
+            capacity_target = self.settings.hunt_cloud_target_count
+            total_slots = len(keep_clouds) + blocked_slots + protected_slots
+            if total_slots < capacity_target:
+                before = len(keep_clouds)
+                await self._create_scope_clouds(
+                    job_id=job_id,
+                    scope=scope,
+                    clouds_api=clouds_api,
+                    billing_account_id=primary_billing.id,
+                    keep_clouds=keep_clouds,
+                    missing=1,
+                )
+                candidates.extend(keep_clouds[before:])
+
+        # Clouds with preexisting target prefixes stay untouched and are excluded from worker loop.
         return candidates, pending_slots
 
     async def _create_scope_clouds(
@@ -1355,18 +1374,16 @@ class HunterEngine:
         return await self.state.all_cloud_targets_reached(job_id)
 
     async def _all_scope_targets_reached(self, job_id: str, scopes: list[ScopeDescriptor]) -> bool:
-        for scope in scopes:
-            if not await self._scope_targets_reached(job_id, scope):
-                return False
-        return True
+        return await self._job_target_reached(job_id)
 
     async def _scope_targets_reached(self, job_id: str, scope: ScopeDescriptor) -> bool:
-        return await self.state.scope_targets_reached(
-            job_id,
-            account_id=scope.account_id,
-            organization_id=scope.organization_id,
-            target_cloud_count=self.settings.hunt_cloud_target_count,
-        )
+        return await self._job_target_reached(job_id)
+
+    async def _job_target_reached(self, job_id: str) -> bool:
+        hunt = await self.state.get_hunt(job_id)
+        if hunt is None:
+            return False
+        return len(hunt.matches) >= hunt.target_count
 
     async def _cloud_target_reached(self, job_id: str, cloud_id: str) -> bool:
         return await self.state.cloud_target_reached(job_id, cloud_id)

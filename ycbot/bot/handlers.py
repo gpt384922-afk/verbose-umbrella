@@ -35,7 +35,7 @@ from ycbot.bot.runtime import BotRuntimeScope
 from ycbot.bot.ui import ce, code, main_menu_text, quote
 from ycbot.core.prefixes import KNOWN_PREFIXES
 from ycbot.core.scheduler import HuntStartRequest, HuntScheduler, HuntStartScope
-from ycbot.core.vm_config import VmHuntConfig
+from ycbot.core.vm_config import VmHuntConfig, matching_vm_config_preset, vm_config_preset
 
 router = Router(name="main_handlers")
 
@@ -207,21 +207,28 @@ def _hunt_target_text() -> str:
         f"{ce('bolt')} | <b>Запуск ханта</b> ▾\n\n"
         + quote(
             f"{ce('diamond')} <b>Шаг 4/5</b>\n"
-            "Сколько VM максимум оставить с нужным префиксом на каждое облако?"
+            "Сколько VM с нужным префиксом нужно поймать за хант?"
         )
     )
 
 
 def _hunt_vm_config_text(config: VmHuntConfig) -> str:
+    preset = matching_vm_config_preset(config)
+    preset_label = preset.title if preset else "собран вручную"
+    memory = f"{config.memory_gb:g}"
     return (
         f"{ce('bolt')} | <b>Запуск ханта</b> ▾\n\n"
         + quote(
-            f"{ce('diamond')} <b>Характеристики VM</b>\n"
+            f"{ce('diamond')} <b>Выберите тарифный план</b>\n"
+            "🔎 <b>Найти решение</b> — готовые конфигурации под быстрый подбор IP.\n"
+            "➕ <b>Создать конфиг</b> — ручная сборка ниже по CPU/RAM/DISK/% vCPU.\n\n"
+            f"Тариф: {_code(preset_label)}\n"
             f"Платформа: {_code(config.platform_label)}\n"
             f"vCPU: {_code(str(config.cores) + ' vCPU')}\n"
-            f"RAM: {_code(str(config.memory_gb) + ' GB')}\n"
+            f"RAM: {_code(memory + ' GB')}\n"
             f"Диск: {_code(config.disk_type_label + ' ' + str(config.disk_size_gb) + ' GB')}\n"
-            f"Гарантированная доля CPU: {_code(str(config.core_fraction) + '%')}"
+            f"Гарантированная доля CPU: {_code(str(config.core_fraction) + '%')}\n"
+            "SSH: ключ генерируется автоматически при найденной VM"
         )
     )
 
@@ -284,7 +291,7 @@ def _hunt_confirm_text(data: dict) -> str:
         f"{ce('eyes')} <b>Префиксы:</b> {_code(', '.join(data.get('prefixes', [])))}\n"
         + _preflight_text(data)
         + "\n"
-        f"{ce('diamond')} <b>Цель:</b> {data.get('target_count')} VM с нужным префиксом на каждое облако\n"
+        f"{ce('diamond')} <b>Цель:</b> {data.get('target_count')} VM с нужным префиксом за хант\n"
         f"VM: {_code(vm_config.platform_label)}, {_code(str(vm_config.cores) + ' vCPU')}, "
         f"{_code(str(vm_config.memory_gb) + ' GB RAM')}, "
         f"{_code(vm_config.disk_type_label + ' ' + str(vm_config.disk_size_gb) + ' GB')}, "
@@ -316,8 +323,8 @@ def _hunt_detail_text(details: dict) -> str:
             f"{ce('bolt')} <b>Время работы:</b> {_format_duration(details.get('runtime_seconds'))}\n"
             f"{ce('eyes')} <b>Перебрано IP:</b> {int(details.get('checked_ip_count') or 0)}\n"
             f"{ce('crown')} <b>Активных облаков:</b> {int(details.get('active_cloud_count') or 0)}\n"
-            f"{ce('diamond')} <b>Прогресс:</b> {details.get('match_count', 0)}/{details.get('target_total', details.get('target_count', 0))} "
-            f"({details.get('target_count', 0)} VM с нужным префиксом на cloud)\n"
+            f"{ce('diamond')} <b>Цель:</b> {details.get('match_count', 0)}/{details.get('target_total', details.get('target_count', 0))} "
+            "VM с нужным префиксом\n"
             f"{ce('bolt')} <b>Префиксы:</b> {_code(', '.join(details.get('prefixes', [])))}\n"
             f"⚠️ <b>Ошибка:</b> {_code(details.get('error') or '-')}"
         )
@@ -1131,11 +1138,12 @@ async def hunt_back_target(callback: CallbackQuery, state: FSMContext) -> None:
 async def hunt_back_vm_config(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     config = VmHuntConfig.from_dict(data.get("vm_config"))
+    page = int(data.get("vm_config_page", 0) or 0)
     await state.set_state(StartHuntFlow.vm_config)
     await _safe_edit_text(
         callback.message,
         _hunt_vm_config_text(config),
-        reply_markup=hunt_vm_config_keyboard(config).as_markup(),
+        reply_markup=hunt_vm_config_keyboard(config, page=page).as_markup(),
     )
     await callback.answer()
 
@@ -1293,13 +1301,27 @@ async def hunt_target_selected(
     target_count = int(callback.data.split(":", maxsplit=2)[2])
     data = await state.get_data()
     config = VmHuntConfig.from_dict(data.get("vm_config"))
-    await state.update_data(target_count=target_count, vm_config=config.to_dict())
+    await state.update_data(target_count=target_count, vm_config=config.to_dict(), vm_config_page=0)
     await state.set_state(StartHuntFlow.vm_config)
     await _safe_edit_text(
         callback.message,
         _hunt_vm_config_text(config),
-        reply_markup=hunt_vm_config_keyboard(config).as_markup(),
+        reply_markup=hunt_vm_config_keyboard(config, page=0).as_markup(),
     )
+
+
+@router.callback_query(StartHuntFlow.vm_config, F.data.startswith("hunt:vm_page:"))
+async def hunt_vm_config_page_selected(callback: CallbackQuery, state: FSMContext) -> None:
+    page = int(callback.data.split(":", maxsplit=2)[2])
+    data = await state.get_data()
+    config = VmHuntConfig.from_dict(data.get("vm_config"))
+    await state.update_data(vm_config_page=page)
+    await _safe_edit_text(
+        callback.message,
+        _hunt_vm_config_text(config),
+        reply_markup=hunt_vm_config_keyboard(config, page=page).as_markup(),
+    )
+    await callback.answer()
 
 
 @router.callback_query(StartHuntFlow.vm_config, F.data.startswith("hunt:vm:"))
@@ -1307,7 +1329,17 @@ async def hunt_vm_config_selected(callback: CallbackQuery, state: FSMContext) ->
     _, _, field, raw_value = callback.data.split(":", maxsplit=3)
     data = await state.get_data()
     config = VmHuntConfig.from_dict(data.get("vm_config")).to_dict()
-    if field == "platform":
+    page = int(data.get("vm_config_page", 0) or 0)
+    if field == "noop":
+        await callback.answer()
+        return
+    if field == "preset":
+        preset = vm_config_preset(raw_value)
+        if preset is None:
+            await callback.answer("Неизвестный тариф", show_alert=True)
+            return
+        config = preset.config.to_dict()
+    elif field == "platform":
         config["platform_id"] = raw_value
     elif field == "cores":
         config["cores"] = int(raw_value)
@@ -1324,7 +1356,7 @@ async def hunt_vm_config_selected(callback: CallbackQuery, state: FSMContext) ->
     await _safe_edit_text(
         callback.message,
         _hunt_vm_config_text(selected),
-        reply_markup=hunt_vm_config_keyboard(selected).as_markup(),
+        reply_markup=hunt_vm_config_keyboard(selected, page=page).as_markup(),
     )
     await callback.answer()
 
@@ -1427,7 +1459,7 @@ async def hunt_start_execute(
             f"{ce('crown')} Организаций: <b>{len(scopes)}</b>\n"
             f"{ce('key')} Аккаунтов: <b>{len({item.account_id for item in scopes})}</b>\n"
             f"{ce('eyes')} Префиксы: {_code(', '.join(prefixes))}\n"
-            f"{ce('diamond')} Цель: <b>{target_count}</b> VM с нужным префиксом на каждое облако\n"
+            f"{ce('diamond')} Цель: <b>{target_count}</b> VM с нужным префиксом за хант\n"
             f"VM: {_code(vm_config.platform_label)}, {_code(str(vm_config.cores) + ' vCPU')}, "
             f"{_code(str(vm_config.memory_gb) + ' GB RAM')}"
         ),
