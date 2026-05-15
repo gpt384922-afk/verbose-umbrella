@@ -141,6 +141,8 @@ VM с неподходящим IP удаляется сразу после пр�
 4. привязывает биллинг;
 5. генерирует новый SSH-ключ и продолжает поиск через новый VM batch.
 
+Если включить `HUNT_ORGANIZATION_ROTATION_ENABLED=true`, после `HUNT_ORGANIZATION_ROTATION_CLOUD_MISS_COUNT=5` последовательных промахнувшихся cloud'ов в одной организации бот сначала дожидается удаления всех cloud'ов старой организации, затем через Selenium создает новую организацию в `center.yandex.cloud`, создает в ней первое облако обычным API-flow и продолжает хант с той же привязкой биллинга.
+
 Если бот уже поймал IP в нужном префиксе, эта VM и ее облако защищаются от автоматического удаления.
 
 Если уже существующий IP входит в один из известных префиксов `158.160`, `84.201`, `51.250`, `87.250.247-254`, `77.88.21`, бот предупреждает об этом перед запуском и не трогает его облако. Такой IP не засчитывается как успешная находка текущего ханта, если его префикс не выбран пользователем.
@@ -205,6 +207,15 @@ HUNT_VM_CORES=2
 HUNT_VM_CORE_FRACTION=20
 HUNT_VM_MEMORY_GB=1
 HUNT_VM_USERNAME=user
+HUNT_ORGANIZATION_ROTATION_ENABLED=false
+HUNT_ORGANIZATION_ROTATION_CLOUD_MISS_COUNT=5
+YC_CENTER_URL=https://center.yandex.cloud/
+# Для Anty/готового браузерного профиля удобнее указать debugging address профиля.
+# YC_CENTER_CHROME_DEBUGGER_ADDRESS=127.0.0.1:9222
+# Либо отдельный Chrome profile:
+# YC_CENTER_CHROME_USER_DATA_DIR=/path/to/chrome-profile
+YC_CENTER_WAIT_SECONDS=90
+YC_CENTER_ORG_NAME_PREFIX=ycbot-org
 ```
 
 Legacy-настройки старого VPC address flow больше не управляют основным хантингом:

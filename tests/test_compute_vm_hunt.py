@@ -9,14 +9,14 @@ from unittest.mock import AsyncMock, patch
 
 from ycbot.bot.notifications import _match_text
 from ycbot.config import Settings
-from ycbot.core.hunter import HunterEngine, ManagedCloud, ScopeDescriptor
+from ycbot.core.hunter import DeletingCloud, HunterEngine, ManagedCloud, PendingCloudSlot, ScopeDescriptor
 from ycbot.core.hunter import MatchNotification
 from ycbot.core.ssh_keys import generate_ssh_keypair
 from ycbot.core.vm_config import VmHuntConfig
 from ycbot.core.scheduler import HuntScheduler, HuntStartScope
 from ycbot.core.state_manager import CloudLifecycle, CloudState, MatchState, StateManager
 from ycbot.db.enums import CloudState as DbCloudState
-from ycbot.yc import Address, YcApiError
+from ycbot.yc import Address, Organization, YcApiError
 from ycbot.yc.compute import ComputeApi, Instance
 from ycbot.yc.vpc import VpcApi
 
@@ -1006,6 +1006,112 @@ class HunterScopeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, hunter._hunt_cloud_once.await_count)
         self.assertEqual(1, max_in_flight)
         hunter._delete_cloud_for_replacement.assert_not_awaited()
+
+    async def test_organization_rotation_waits_deletions_then_creates_first_cloud(self) -> None:
+        events: list[str] = []
+        organization_created = False
+        state = SimpleNamespace(register_cloud=AsyncMock())
+        hunter = HunterEngine(
+            settings=SimpleNamespace(
+                hunt_cloud_target_count=5,
+                hunt_cycles_per_cloud=1,
+                hunt_organization_rotation_enabled=True,
+                hunt_organization_rotation_cloud_miss_count=5,
+                yc_center_wait_seconds=1,
+                yc_center_org_name_prefix="ycbot-org",
+            ),
+            db=SimpleNamespace(),
+            state=state,
+            semaphore=asyncio.Semaphore(16),
+            logger=logging.getLogger("test"),
+        )
+        hunter._upsert_cloud_row = AsyncMock()
+        hunter._set_cloud_progress = AsyncMock()
+        hunter._replace_account_organizations = AsyncMock()
+
+        async def create_organization(name, *, current_organization_name):
+            nonlocal organization_created
+            events.append("selenium-create-org")
+            organization_created = True
+            self.assertEqual("Old Org", current_organization_name)
+            return "New Org"
+
+        hunter._create_organization_via_selenium = AsyncMock(side_effect=create_organization)
+
+        async def delete_task():
+            events.append("delete-start")
+            await asyncio.sleep(0)
+            events.append("deleted-cloud")
+            return True
+
+        async def pending_task():
+            events.append("pending-start")
+            await asyncio.sleep(0)
+            events.append("deleted-pending")
+
+        deleting = [
+            DeletingCloud(
+                cloud=ManagedCloud(
+                    account_id="acc-1",
+                    organization_id="org-old",
+                    cloud_id="cloud-old",
+                    cloud_name="Old Cloud",
+                    folder_id="folder-old",
+                    billing_account_id="billing-1",
+                ),
+                task=asyncio.create_task(delete_task()),
+            )
+        ]
+        pending_slots = [
+            PendingCloudSlot(
+                cloud_id="cloud-pending",
+                billing_account_id="billing-1",
+                task=asyncio.create_task(pending_task()),
+            )
+        ]
+
+        test_case = self
+
+        class FakeCloudsApi:
+            async def list_organizations(self):
+                organizations = [Organization(id="org-old", name="Old Org", state="ACTIVE")]
+                if organization_created:
+                    organizations.append(Organization(id="org-new", name="New Org", state="ACTIVE"))
+                return organizations
+
+            async def create_cloud_with_folder(self, *, organization_id, name, billing_account_id):
+                events.append(f"create-cloud:{organization_id}")
+                self_assert_order = events.index("create-cloud:org-new")
+                test_case.assertLess(events.index("deleted-cloud"), self_assert_order)
+                test_case.assertLess(events.index("deleted-pending"), self_assert_order)
+                cloud = SimpleNamespace(
+                    id="cloud-new",
+                    name=name,
+                    organization_id=organization_id,
+                    state=DbCloudState.ACTIVE,
+                    deleting=False,
+                )
+                folder = SimpleNamespace(id="folder-new", name="Folder")
+                return cloud, folder
+
+        new_scope, candidates, new_pending = await hunter._rotate_scope_organization_after_misses(
+            job_id="job-1",
+            scope=ScopeDescriptor(account_id="acc-1", organization_id="org-old"),
+            deleting=deleting,
+            pending_slots=pending_slots,
+            clouds_api=FakeCloudsApi(),
+            billing_account_id="billing-1",
+            stop_event=asyncio.Event(),
+        )
+
+        self.assertEqual("org-new", new_scope.organization_id)
+        self.assertEqual(["cloud-new"], [item.cloud_id for item in candidates])
+        self.assertEqual([], new_pending)
+        self.assertEqual([], deleting)
+        self.assertEqual([], pending_slots)
+        self.assertLess(events.index("deleted-cloud"), events.index("selenium-create-org"))
+        self.assertLess(events.index("deleted-pending"), events.index("selenium-create-org"))
+        hunter._replace_account_organizations.assert_awaited_once()
 
 
 class NotificationVmTests(unittest.TestCase):

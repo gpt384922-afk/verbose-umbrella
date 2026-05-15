@@ -173,7 +173,7 @@ def target_keyboard() -> InlineKeyboardBuilder:
 VM_CONFIG_PRESET_PAGE_SIZE = 3
 
 
-def hunt_vm_config_keyboard(config: VmHuntConfig, *, page: int = 0) -> InlineKeyboardBuilder:
+def hunt_vm_config_keyboard(config: VmHuntConfig, *, page: int = 0, manual: bool = False) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     page_count = max(1, (len(VM_CONFIG_PRESETS) + VM_CONFIG_PRESET_PAGE_SIZE - 1) // VM_CONFIG_PRESET_PAGE_SIZE)
     page = max(0, min(page, page_count - 1))
@@ -183,36 +183,42 @@ def hunt_vm_config_keyboard(config: VmHuntConfig, *, page: int = 0) -> InlineKey
         marker = "🟢" if config.platform_id == platform_id else "⚪"
         kb.button(text=f"{marker} CPU: {label}", callback_data=f"hunt:vm:platform:{platform_id}")
 
-    start = page * VM_CONFIG_PRESET_PAGE_SIZE
-    for preset in VM_CONFIG_PRESETS[start:start + VM_CONFIG_PRESET_PAGE_SIZE]:
-        marker = "🟢" if selected_preset and selected_preset.id == preset.id else "⚪"
-        kb.button(text=f"{marker} {preset.button_label}", callback_data=f"hunt:vm:preset:{preset.id}")
+    if manual:
+        for cores in ALLOWED_CORES:
+            marker = "🟢" if config.cores == cores else "⚪"
+            kb.button(text=f"{marker} {cores} vCPU", callback_data=f"hunt:vm:cores:{cores}")
+        for memory_gb in ALLOWED_MEMORY_GB:
+            marker = "🟢" if config.memory_gb == memory_gb else "⚪"
+            kb.button(text=f"{marker} {memory_gb:g} GB RAM", callback_data=f"hunt:vm:memory:{memory_gb}")
+        for disk_type_id, label in DISK_TYPE_LABELS.items():
+            marker = "🟢" if config.disk_type_id == disk_type_id else "⚪"
+            kb.button(text=f"{marker} {label}", callback_data=f"hunt:vm:disk_type:{disk_type_id}")
+        for disk_size_gb in ALLOWED_DISK_SIZE_GB:
+            marker = "🟢" if config.disk_size_gb == disk_size_gb else "⚪"
+            kb.button(text=f"{marker} {disk_size_gb} GB", callback_data=f"hunt:vm:disk_size:{disk_size_gb}")
+        for fraction in ALLOWED_CORE_FRACTIONS:
+            marker = "🟢" if config.core_fraction == fraction else "⚪"
+            kb.button(text=f"{marker} {fraction}%", callback_data=f"hunt:vm:fraction:{fraction}")
+        kb.button(text="К тарифам", callback_data="hunt:vm_mode:tariffs")
+        adjust = (1, 1, 1, 3, 5, 3, 5, 4, 1, 1, 1, 1)
+    else:
+        start = page * VM_CONFIG_PRESET_PAGE_SIZE
+        for preset in VM_CONFIG_PRESETS[start:start + VM_CONFIG_PRESET_PAGE_SIZE]:
+            marker = "🟢" if selected_preset and selected_preset.id == preset.id else "⚪"
+            kb.button(text=f"{marker} {preset.button_label}", callback_data=f"hunt:vm:preset:{preset.id}")
 
-    prev_page = max(0, page - 1)
-    next_page = min(page_count - 1, page + 1)
-    kb.button(text="«", callback_data=f"hunt:vm_page:{prev_page}")
-    kb.button(text=f"{page + 1}/{page_count}", callback_data="hunt:vm:noop:page")
-    kb.button(text="»", callback_data=f"hunt:vm_page:{next_page}")
+        prev_page = max(0, page - 1)
+        next_page = min(page_count - 1, page + 1)
+        kb.button(text="«", callback_data=f"hunt:vm_page:{prev_page}")
+        kb.button(text=f"{page + 1}/{page_count}", callback_data="hunt:vm:noop:page")
+        kb.button(text="»", callback_data=f"hunt:vm_page:{next_page}")
+        kb.button(text="Создать конфиг", callback_data="hunt:vm_mode:manual")
+        adjust = (1, 1, 1, 1, 1, 1, 3, 1, 1, 1, 1)
 
-    for cores in ALLOWED_CORES:
-        marker = "🟢" if config.cores == cores else "⚪"
-        kb.button(text=f"{marker} {cores} vCPU", callback_data=f"hunt:vm:cores:{cores}")
-    for memory_gb in ALLOWED_MEMORY_GB:
-        marker = "🟢" if config.memory_gb == memory_gb else "⚪"
-        kb.button(text=f"{marker} {memory_gb} GB RAM", callback_data=f"hunt:vm:memory:{memory_gb}")
-    for disk_type_id, label in DISK_TYPE_LABELS.items():
-        marker = "🟢" if config.disk_type_id == disk_type_id else "⚪"
-        kb.button(text=f"{marker} {label}", callback_data=f"hunt:vm:disk_type:{disk_type_id}")
-    for disk_size_gb in ALLOWED_DISK_SIZE_GB:
-        marker = "🟢" if config.disk_size_gb == disk_size_gb else "⚪"
-        kb.button(text=f"{marker} {disk_size_gb} GB disk", callback_data=f"hunt:vm:disk_size:{disk_size_gb}")
-    for fraction in ALLOWED_CORE_FRACTIONS:
-        marker = "🟢" if config.core_fraction == fraction else "⚪"
-        kb.button(text=f"{marker} {fraction}%", callback_data=f"hunt:vm:fraction:{fraction}")
     kb.button(text="Дальше", callback_data="hunt:vm_done", style="success")
     kb.button(text="Назад", callback_data="hunt:back:target")
     kb.button(text="Отмена", callback_data="hunt:cancel", style="danger")
-    kb.adjust(1, 1, 1, 1, 1, 1, 3, 3, 5, 3, 5, 4, 1, 1, 1)
+    kb.adjust(*adjust)
     return kb
 
 

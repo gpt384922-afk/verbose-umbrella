@@ -24,20 +24,5 @@ services:
       postgres:
         condition: service_healthy
 
-  ycweb:
-    build: .
-    restart: unless-stopped
-    command: python -m ycbot.web
-    env_file: .env
-    environment:
-      DATABASE_DSN: postgresql+asyncpg://postgres:postgres@postgres:5432/ychunter
-      WEB_HOST: 0.0.0.0
-      WEB_PORT: 8000
-    ports:
-      - "8000:8000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-
 volumes:
   postgres_data:

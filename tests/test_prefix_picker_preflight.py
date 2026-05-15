@@ -135,7 +135,7 @@ class PrefixCatalogUiTests(unittest.TestCase):
             disk_size_gb=20,
         )
         text = _hunt_vm_config_text(config)
-        markup = hunt_vm_config_keyboard(config).as_markup()
+        markup = hunt_vm_config_keyboard(config, manual=True).as_markup()
         buttons = [button for row in markup.inline_keyboard for button in row]
         by_callback = {button.callback_data: button.text for button in buttons}
 
@@ -149,7 +149,7 @@ class PrefixCatalogUiTests(unittest.TestCase):
         self.assertIn("🟢", by_callback["hunt:vm:cores:4"])
         self.assertIn("Дальше", by_callback["hunt:vm_done"])
 
-    def test_hunt_vm_config_keyboard_uses_tariff_cards_without_location_or_rent(self) -> None:
+    def test_hunt_vm_config_keyboard_uses_reference_tariff_layout_without_location_or_rent(self) -> None:
         config = VmHuntConfig(
             platform_id="standard-v2",
             cores=2,
@@ -175,6 +175,24 @@ class PrefixCatalogUiTests(unittest.TestCase):
         self.assertIn("🟢", by_callback["hunt:vm:preset:cascade-tiny"])
         self.assertIn("1/2", labels)
         self.assertIn("»", by_callback["hunt:vm_page:1"])
+        self.assertIn("Создать конфиг", by_callback["hunt:vm_mode:manual"])
+        self.assertNotIn("hunt:vm:cores:2", by_callback)
+        self.assertNotIn("hunt:vm:memory:1", by_callback)
+        self.assertNotIn("hunt:vm:fraction:20", by_callback)
+
+    def test_hunt_vm_config_manual_mode_keeps_current_resource_controls(self) -> None:
+        config = VmHuntConfig.default()
+        markup = hunt_vm_config_keyboard(config, manual=True).as_markup()
+        buttons = [button for row in markup.inline_keyboard for button in row]
+        by_callback = {button.callback_data: button.text for button in buttons}
+
+        self.assertIn("🟢", by_callback["hunt:vm:platform:standard-v4a"])
+        self.assertIn("🟢", by_callback["hunt:vm:cores:2"])
+        self.assertIn("🟢", by_callback["hunt:vm:memory:1"])
+        self.assertIn("🟢", by_callback["hunt:vm:disk_type:network-hdd"])
+        self.assertIn("🟢", by_callback["hunt:vm:disk_size:10"])
+        self.assertIn("🟢", by_callback["hunt:vm:fraction:20"])
+        self.assertIn("К тарифам", by_callback["hunt:vm_mode:tariffs"])
 
     def test_hunt_vm_config_allows_cascade_lake_minimal_resources(self) -> None:
         config = VmHuntConfig(
@@ -186,7 +204,7 @@ class PrefixCatalogUiTests(unittest.TestCase):
             disk_size_gb=5,
         ).validated()
         text = _hunt_vm_config_text(config)
-        markup = hunt_vm_config_keyboard(config).as_markup()
+        markup = hunt_vm_config_keyboard(config, manual=True).as_markup()
         buttons = [button for row in markup.inline_keyboard for button in row]
         by_callback = {button.callback_data: button.text for button in buttons}
 

@@ -4,7 +4,7 @@ import asyncio
 import re
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
 from ycbot.config import Settings
@@ -17,7 +17,8 @@ from ycbot.db.enums import HuntCloudStatus, HuntStatus
 from ycbot.db.repositories import AccountRepository, AddressRepository, HuntRepository
 from ycbot.db.session import Database
 from ycbot.utils import log_error, log_event
-from ycbot.yc import Cloud, CloudsApi, ComputeApi, VpcApi, YcApiError, YcClient
+from ycbot.yc import Cloud, CloudsApi, ComputeApi, Organization, VpcApi, YcApiError, YcClient
+from ycbot.yc.center import CloudCenterOrganizationCreator
 
 
 VM_RECORD_PREFIX = "vm:"
@@ -109,6 +110,7 @@ class HunterEngine:
         self.logger = logger
         self._match_notifier: MatchNotifier | None = None
         self._vm_keypairs: dict[tuple[str, str], SshKeyPair] = {}
+        self._organization_creator: CloudCenterOrganizationCreator | None = None
 
     def set_match_notifier(self, notifier: MatchNotifier | None) -> None:
         self._match_notifier = notifier
@@ -191,6 +193,7 @@ class HunterEngine:
                 stop_event,
             )
             deleting: list[DeletingCloud] = []
+            missed_clouds_in_org = 0
 
             try:
                 while not stop_event.is_set() and not await self._scope_targets_reached(job_id, scope):
@@ -300,6 +303,21 @@ class HunterEngine:
                                 task=asyncio.create_task(self._delete_cloud_for_replacement(scope, cloud, clouds_api)),
                             )
                         )
+                        missed_clouds_in_org += 1
+                        if (
+                            getattr(self.settings, "hunt_organization_rotation_enabled", False)
+                            and missed_clouds_in_org >= self.settings.hunt_organization_rotation_cloud_miss_count
+                        ):
+                            scope, candidates, pending_slots = await self._rotate_scope_organization_after_misses(
+                                job_id=job_id,
+                                scope=scope,
+                                deleting=deleting,
+                                pending_slots=pending_slots,
+                                clouds_api=clouds_api,
+                                billing_account_id=cloud.billing_account_id,
+                                stop_event=stop_event,
+                            )
+                            missed_clouds_in_org = 0
             finally:
                 if deleting:
                     await asyncio.gather(*(item.task for item in deleting), return_exceptions=True)
@@ -1025,6 +1043,170 @@ class HunterEngine:
             replacements.append(replacement)
         return replacements
 
+    async def _rotate_scope_organization_after_misses(
+        self,
+        *,
+        job_id: str,
+        scope: ScopeDescriptor,
+        deleting: list[DeletingCloud],
+        pending_slots: list[PendingCloudSlot],
+        clouds_api: CloudsApi,
+        billing_account_id: str,
+        stop_event: asyncio.Event,
+    ) -> tuple[ScopeDescriptor, list[ManagedCloud], list[PendingCloudSlot]]:
+        log_event(
+            self.logger,
+            "organization.rotation.wait_cloud_deletions",
+            job_id=job_id,
+            account_id=scope.account_id,
+            org_id=scope.organization_id,
+            missed_clouds=self.settings.hunt_organization_rotation_cloud_miss_count,
+        )
+        await self._drain_cloud_deletions_without_replacement(
+            job_id=job_id,
+            scope=scope,
+            deleting=deleting,
+            pending_slots=pending_slots,
+        )
+        if stop_event.is_set():
+            return scope, [], []
+
+        existing_organizations = await clouds_api.list_organizations()
+        existing_ids = {item.id for item in existing_organizations}
+        current_org_name = next(
+            (item.name for item in existing_organizations if item.id == scope.organization_id),
+            None,
+        )
+        next_name = self._next_organization_name(scope.organization_id)
+        created_name = await self._create_organization_via_selenium(
+            next_name,
+            current_organization_name=current_org_name,
+        )
+        new_organization = await self._wait_for_new_organization(
+            clouds_api=clouds_api,
+            name=created_name,
+            existing_ids=existing_ids,
+        )
+        await self._replace_account_organizations(
+            scope.account_id,
+            await clouds_api.list_organizations(),
+        )
+
+        new_scope = ScopeDescriptor(account_id=scope.account_id, organization_id=new_organization.id)
+        candidates: list[ManagedCloud] = []
+        await self._create_scope_clouds(
+            job_id=job_id,
+            scope=new_scope,
+            clouds_api=clouds_api,
+            billing_account_id=billing_account_id,
+            keep_clouds=candidates,
+            missing=1,
+        )
+        log_event(
+            self.logger,
+            "organization.rotation.created",
+            job_id=job_id,
+            account_id=scope.account_id,
+            old_org_id=scope.organization_id,
+            new_org_id=new_organization.id,
+            new_org_name=new_organization.name,
+            cloud_count=len(candidates),
+        )
+        return new_scope, candidates, []
+
+    async def _drain_cloud_deletions_without_replacement(
+        self,
+        *,
+        job_id: str,
+        scope: ScopeDescriptor,
+        deleting: list[DeletingCloud],
+        pending_slots: list[PendingCloudSlot],
+    ) -> None:
+        errors: list[str] = []
+        for item in list(deleting):
+            try:
+                await item.task
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log_error(self.logger, "cloud.delete.error", exc, cloud_id=item.cloud.cloud_id)
+                errors.append(f"{item.cloud.cloud_id}: {exc}")
+                await self._set_cloud_progress(
+                    job_id,
+                    scope,
+                    item.cloud.cloud_id,
+                    HuntCloudStatus.FAILED,
+                    self.settings.hunt_cycles_per_cloud,
+                    notes="delete failed before organization rotation",
+                    error=str(exc),
+                )
+            finally:
+                if item in deleting:
+                    deleting.remove(item)
+
+        for item in list(pending_slots):
+            try:
+                await item.task
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log_error(
+                    self.logger,
+                    "cloud.capacity.wait_deleting.error",
+                    exc,
+                    account_id=scope.account_id,
+                    org_id=scope.organization_id,
+                    cloud_id=item.cloud_id,
+                )
+                errors.append(f"{item.cloud_id}: {exc}")
+            finally:
+                if item in pending_slots:
+                    pending_slots.remove(item)
+
+        if errors:
+            raise RuntimeError("cloud deletion failed before organization rotation: " + "; ".join(errors[:3]))
+
+    async def _create_organization_via_selenium(
+        self,
+        name: str,
+        *,
+        current_organization_name: str | None,
+    ) -> str:
+        if not getattr(self.settings, "hunt_organization_rotation_enabled", False):
+            raise RuntimeError("organization rotation is disabled")
+        if self._organization_creator is None:
+            self._organization_creator = CloudCenterOrganizationCreator(settings=self.settings, logger=self.logger)
+        return await asyncio.to_thread(
+            self._organization_creator.create_organization,
+            name,
+            current_organization_name=current_organization_name,
+        )
+
+    async def _wait_for_new_organization(
+        self,
+        *,
+        clouds_api: CloudsApi,
+        name: str,
+        existing_ids: set[str],
+    ) -> Organization:
+        deadline = time.monotonic() + self.settings.yc_center_wait_seconds
+        last_seen: list[Organization] = []
+        while time.monotonic() <= deadline:
+            last_seen = await clouds_api.list_organizations()
+            for organization in last_seen:
+                if organization.name == name and organization.id not in existing_ids:
+                    return organization
+            await asyncio.sleep(3)
+
+        known = ", ".join(f"{item.name}:{item.id}" for item in last_seen[:10])
+        raise RuntimeError(f"created organization not found by name={name!r}; seen={known}")
+
+    async def _replace_account_organizations(self, account_id: str, organizations: list[Organization]) -> None:
+        async with self.db.session() as session:
+            repo = AccountRepository(session)
+            await repo.replace_organizations(account_id, [asdict(item) for item in organizations])
+            await session.commit()
+
     async def _create_replacement_cloud(
         self,
         *,
@@ -1434,6 +1616,11 @@ class HunterEngine:
             seq += 1
         ts = int(datetime.now(tz=timezone.utc).timestamp())
         return f"ycbot-{suffix}-{ts}"
+
+    def _next_organization_name(self, organization_id: str) -> str:
+        prefix = re.sub(r"[^a-zA-Z0-9-]", "-", self.settings.yc_center_org_name_prefix).strip("-") or "ycbot-org"
+        suffix = re.sub(r"[^a-z0-9]", "", organization_id.lower())[-6:] or "org"
+        return f"{prefix}-{suffix}-{int(time.time())}"
 
     @staticmethod
     def _next_vm_name(cloud_id: str, index: int) -> str:

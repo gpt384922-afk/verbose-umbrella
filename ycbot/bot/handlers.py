@@ -217,11 +217,8 @@ def _hunt_vm_config_text(config: VmHuntConfig) -> str:
     preset_label = preset.title if preset else "собран вручную"
     memory = f"{config.memory_gb:g}"
     return (
-        f"{ce('bolt')} | <b>Запуск ханта</b> ▾\n\n"
+        f"{ce('diamond')} <b>Выберите тарифный план</b>⌄\n\n"
         + quote(
-            f"{ce('diamond')} <b>Выберите тарифный план</b>\n"
-            "🔎 <b>Найти решение</b> — готовые конфигурации под быстрый подбор IP.\n"
-            "➕ <b>Создать конфиг</b> — ручная сборка ниже по CPU/RAM/DISK/% vCPU.\n\n"
             f"Тариф: {_code(preset_label)}\n"
             f"Платформа: {_code(config.platform_label)}\n"
             f"vCPU: {_code(str(config.cores) + ' vCPU')}\n"
@@ -230,6 +227,13 @@ def _hunt_vm_config_text(config: VmHuntConfig) -> str:
             f"Гарантированная доля CPU: {_code(str(config.core_fraction) + '%')}\n"
             "SSH: ключ генерируется автоматически при найденной VM"
         )
+        + "\n\n"
+        + quote(
+            "🔎 <b>Найти решение</b> — готовые конфигурации под быстрый подбор IP.\n"
+            "➕ <b>Создать конфиг</b> — сервер с пользовательскими CPU/RAM/DISK/% vCPU."
+        )
+        + "\n\n"
+        + f"» <b>Выберите необходимый тариф или соберите сервер вручную.</b>"
     )
 
 
@@ -1139,11 +1143,12 @@ async def hunt_back_vm_config(callback: CallbackQuery, state: FSMContext) -> Non
     data = await state.get_data()
     config = VmHuntConfig.from_dict(data.get("vm_config"))
     page = int(data.get("vm_config_page", 0) or 0)
+    manual = bool(data.get("vm_config_manual", False))
     await state.set_state(StartHuntFlow.vm_config)
     await _safe_edit_text(
         callback.message,
         _hunt_vm_config_text(config),
-        reply_markup=hunt_vm_config_keyboard(config, page=page).as_markup(),
+        reply_markup=hunt_vm_config_keyboard(config, page=page, manual=manual).as_markup(),
     )
     await callback.answer()
 
@@ -1301,12 +1306,12 @@ async def hunt_target_selected(
     target_count = int(callback.data.split(":", maxsplit=2)[2])
     data = await state.get_data()
     config = VmHuntConfig.from_dict(data.get("vm_config"))
-    await state.update_data(target_count=target_count, vm_config=config.to_dict(), vm_config_page=0)
+    await state.update_data(target_count=target_count, vm_config=config.to_dict(), vm_config_page=0, vm_config_manual=False)
     await state.set_state(StartHuntFlow.vm_config)
     await _safe_edit_text(
         callback.message,
         _hunt_vm_config_text(config),
-        reply_markup=hunt_vm_config_keyboard(config, page=0).as_markup(),
+        reply_markup=hunt_vm_config_keyboard(config, page=0, manual=False).as_markup(),
     )
 
 
@@ -1315,11 +1320,28 @@ async def hunt_vm_config_page_selected(callback: CallbackQuery, state: FSMContex
     page = int(callback.data.split(":", maxsplit=2)[2])
     data = await state.get_data()
     config = VmHuntConfig.from_dict(data.get("vm_config"))
+    manual = bool(data.get("vm_config_manual", False))
     await state.update_data(vm_config_page=page)
     await _safe_edit_text(
         callback.message,
         _hunt_vm_config_text(config),
-        reply_markup=hunt_vm_config_keyboard(config, page=page).as_markup(),
+        reply_markup=hunt_vm_config_keyboard(config, page=page, manual=manual).as_markup(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(StartHuntFlow.vm_config, F.data.startswith("hunt:vm_mode:"))
+async def hunt_vm_config_mode_selected(callback: CallbackQuery, state: FSMContext) -> None:
+    mode = callback.data.split(":", maxsplit=2)[2]
+    data = await state.get_data()
+    config = VmHuntConfig.from_dict(data.get("vm_config"))
+    page = int(data.get("vm_config_page", 0) or 0)
+    manual = mode == "manual"
+    await state.update_data(vm_config_manual=manual)
+    await _safe_edit_text(
+        callback.message,
+        _hunt_vm_config_text(config),
+        reply_markup=hunt_vm_config_keyboard(config, page=page, manual=manual).as_markup(),
     )
     await callback.answer()
 
@@ -1330,6 +1352,7 @@ async def hunt_vm_config_selected(callback: CallbackQuery, state: FSMContext) ->
     data = await state.get_data()
     config = VmHuntConfig.from_dict(data.get("vm_config")).to_dict()
     page = int(data.get("vm_config_page", 0) or 0)
+    manual = bool(data.get("vm_config_manual", False))
     if field == "noop":
         await callback.answer()
         return
@@ -1356,7 +1379,7 @@ async def hunt_vm_config_selected(callback: CallbackQuery, state: FSMContext) ->
     await _safe_edit_text(
         callback.message,
         _hunt_vm_config_text(selected),
-        reply_markup=hunt_vm_config_keyboard(selected, page=page).as_markup(),
+        reply_markup=hunt_vm_config_keyboard(selected, page=page, manual=manual).as_markup(),
     )
     await callback.answer()
 
