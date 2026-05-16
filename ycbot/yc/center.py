@@ -87,10 +87,26 @@ class CloudCenterOrganizationCreator:
         driver = self._build_driver()
         wait = WebDriverWait(driver, self.settings.yc_center_wait_seconds)
         try:
+            log_event(self.logger, "center.organization.create_start", name=name)
             driver.get(self.settings.yc_center_url)
+            log_event(
+                self.logger,
+                "center.organization.opened",
+                url=self._short_url(driver.current_url),
+                title=(driver.title or "-")[:120],
+            )
+            self._raise_if_login_required(driver, "open Cloud Center")
             self._close_optional_welcome(driver)
             if not self._open_create_page_from_menu(driver, wait, current_organization_name):
+                log_event(self.logger, "center.organization.menu_fallback")
                 driver.get(self.settings.yc_center_url.rstrip("/") + "/create")
+            log_event(
+                self.logger,
+                "center.organization.create_page",
+                url=self._short_url(driver.current_url),
+                title=(driver.title or "-")[:120],
+            )
+            self._raise_if_login_required(driver, "open organization create page")
 
             name_input = wait.until(
                 EC.element_to_be_clickable(
@@ -103,6 +119,7 @@ class CloudCenterOrganizationCreator:
             )
             name_input.clear()
             name_input.send_keys(name)
+            log_event(self.logger, "center.organization.name_filled", name=name)
 
             create_button = wait.until(
                 EC.element_to_be_clickable(
@@ -114,8 +131,16 @@ class CloudCenterOrganizationCreator:
                 )
             )
             create_button.click()
+            log_event(self.logger, "center.organization.submit_clicked", name=name)
             wait.until(lambda browser: "/create" not in browser.current_url)
+            self._raise_if_login_required(driver, "submit organization create form")
             time.sleep(2)
+            log_event(
+                self.logger,
+                "center.organization.create_done",
+                name=name,
+                url=self._short_url(driver.current_url),
+            )
             return name
         finally:
             if self._should_quit_driver():
@@ -185,6 +210,21 @@ class CloudCenterOrganizationCreator:
         timeout = max(10, min(int(self.settings.yc_center_wait_seconds), 30))
         driver.set_page_load_timeout(timeout)
         driver.set_script_timeout(timeout)
+
+    @staticmethod
+    def _raise_if_login_required(driver, action: str) -> None:
+        current_url = (driver.current_url or "").lower()
+        title = (driver.title or "").lower()
+        if "passport.yandex" in current_url or "passport.yandex" in title or "auth" in current_url:
+            raise RuntimeError(
+                f"Yandex login required while trying to {action}; imported cookies are missing or expired"
+            )
+
+    @staticmethod
+    def _short_url(url: str) -> str:
+        if len(url) <= 180:
+            return url
+        return url[:177] + "..."
 
     def _should_quit_driver(self) -> bool:
         if self.settings.yc_center_selenium_quit:
