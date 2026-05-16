@@ -217,5 +217,64 @@ class CloudCenterCookieTests(unittest.TestCase):
         self.assertTrue(cookies[0]["httpOnly"])
 
 
+class FakeCenterElement:
+    def __init__(
+        self,
+        *,
+        text: str,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        displayed: bool = True,
+    ) -> None:
+        self.text = text
+        self.rect = {"x": x, "y": y, "width": width, "height": height}
+        self._displayed = displayed
+
+    def is_displayed(self) -> bool:
+        return self._displayed
+
+
+class CloudCenterMenuSelectionTests(unittest.TestCase):
+    def test_topbar_switcher_matches_active_organization_in_header_area(self) -> None:
+        element = FakeCenterElement(
+            text="organization-seofreeconahidotech",
+            x=190,
+            y=160,
+            width=320,
+            height=52,
+        )
+
+        self.assertTrue(CloudCenterOrganizationCreator._looks_like_topbar_switcher(element))
+
+    def test_topbar_switcher_matches_custom_short_organization_name(self) -> None:
+        element = FakeCenterElement(text="123", x=190, y=160, width=180, height=52)
+
+        self.assertTrue(CloudCenterOrganizationCreator._looks_like_topbar_switcher(element))
+
+    def test_topbar_switcher_ignores_large_page_heading_with_same_organization_name(self) -> None:
+        element = FakeCenterElement(
+            text="organization-seofreeconahidotech",
+            x=420,
+            y=270,
+            width=620,
+            height=86,
+        )
+
+        self.assertFalse(CloudCenterOrganizationCreator._looks_like_topbar_switcher(element))
+
+    def test_create_organization_action_matches_dropdown_item(self) -> None:
+        element = FakeCenterElement(
+            text="Создать организацию",
+            x=24,
+            y=315,
+            width=285,
+            height=42,
+        )
+
+        self.assertTrue(CloudCenterOrganizationCreator._is_visible_action(element))
+
+
 if __name__ == "__main__":
     unittest.main()

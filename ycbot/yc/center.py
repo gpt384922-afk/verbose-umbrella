@@ -104,7 +104,7 @@ class CloudCenterOrganizationCreator:
             )
             self._raise_if_login_required(driver, "open Cloud Center")
             self._close_optional_welcome(driver)
-            if not self._open_create_page_from_menu(driver, wait, current_organization_name):
+            if not self._open_create_page_from_menu(driver, current_organization_name):
                 log_event(self.logger, "center.organization.menu_fallback")
                 driver.get(self.settings.yc_center_url.rstrip("/") + "/create")
             log_event(
@@ -115,6 +115,7 @@ class CloudCenterOrganizationCreator:
             )
             self._raise_if_login_required(driver, "open organization create page")
 
+            log_event(self.logger, "center.organization.wait_name_input")
             name_input = wait.until(
                 EC.element_to_be_clickable(
                     (
@@ -266,6 +267,10 @@ class CloudCenterOrganizationCreator:
     def _raise_if_login_required(driver, action: str) -> None:
         current_url = (driver.current_url or "").lower()
         title = (driver.title or "").lower()
+        if "showcaptcha" in current_url or "not a robot" in title or "captcha" in title:
+            raise RuntimeError(
+                f"Yandex captcha required while trying to {action}; change center proxy or import cookies from same proxy/IP"
+            )
         if "passport.yandex" in current_url or "passport.yandex" in title or "auth" in current_url:
             raise RuntimeError(
                 f"Yandex login required while trying to {action}; imported cookies are missing or expired"
@@ -286,44 +291,243 @@ class CloudCenterOrganizationCreator:
             and not self.settings.yc_center_selenium_remote_url
         )
 
-    def _open_create_page_from_menu(self, driver, wait, current_organization_name: str | None) -> bool:
+    def _open_create_page_from_menu(self, driver, current_organization_name: str | None) -> bool:
         from selenium.webdriver.common.by import By
-        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.support.ui import WebDriverWait
+
+        short_wait_seconds = max(3, min(int(self.settings.yc_center_wait_seconds), 8))
+        short_wait = WebDriverWait(driver, short_wait_seconds)
+        try:
+            short_wait.until(lambda browser: browser.find_element(By.TAG_NAME, "body").text.strip())
+        except Exception:  # noqa: BLE001
+            pass
+
+        menu_element = self._find_active_organization_switcher(driver, current_organization_name)
+        if menu_element is not None:
+            self._click_element(driver, menu_element)
+            log_event(
+                self.logger,
+                "center.organization.menu_clicked",
+                strategy="active_org_switcher",
+                organization=current_organization_name or "-",
+            )
+        else:
+            menu_xpaths = []
+            if current_organization_name:
+                menu_xpaths.append(
+                    "//*[self::button or self::a or @role='button' or @role='menuitem']"
+                    f"[contains(normalize-space(), {self._xpath_literal(current_organization_name)})]"
+                )
+            menu_xpaths.extend(
+                [
+                    "//*[self::button or self::a or @role='button']"
+                    "[contains(normalize-space(), 'Organization')]",
+                    "//*[self::button or self::a or @role='button']"
+                    "[contains(normalize-space(), 'Организация')]",
+                ]
+            )
+            for xpath in menu_xpaths:
+                try:
+                    log_event(self.logger, "center.organization.menu_try", strategy="xpath")
+                    self._click_element(
+                        driver,
+                        short_wait.until(lambda browser, path=xpath: self._first_visible(browser, path)),
+                    )
+                    break
+                except Exception:  # noqa: BLE001
+                    continue
+            else:
+                log_event(
+                    self.logger,
+                    "center.organization.menu_not_found",
+                    wait_seconds=short_wait_seconds,
+                    body=self._body_sample(driver),
+                )
+                return False
+
+        try:
+            create_item = short_wait.until(
+                lambda browser: self._find_visible_text_action(browser, "Создать организацию")
+            )
+            self._click_element(driver, create_item)
+            log_event(self.logger, "center.organization.create_menu_clicked")
+            return True
+        except Exception:  # noqa: BLE001
+            log_event(
+                self.logger,
+                "center.organization.create_menu_not_found",
+                wait_seconds=short_wait_seconds,
+                body=self._body_sample(driver),
+            )
+            return False
+
+    def _find_active_organization_switcher(self, driver, current_organization_name: str | None):
+        from selenium.webdriver.common.by import By
 
         menu_xpaths = []
         if current_organization_name:
             menu_xpaths.append(
-                "//*[self::button or @role='button']"
-                f"[contains(normalize-space(), {self._xpath_literal(current_organization_name)})]"
+                "//*[contains(normalize-space(), "
+                f"{self._xpath_literal(current_organization_name)})]"
+                "[not(self::script) and not(self::style)]"
             )
         menu_xpaths.extend(
             [
-                "//*[self::button or @role='button'][contains(normalize-space(), 'Organization')]",
-                "//*[self::button or @role='button'][contains(normalize-space(), 'Организация')]",
+                "//*[contains(normalize-space(), 'organization-')]"
+                "[not(self::script) and not(self::style)]",
+                "//*[contains(normalize-space(), 'Organization')]"
+                "[not(self::script) and not(self::style)]",
+                "//*[contains(normalize-space(), 'Организация')]"
+                "[not(self::script) and not(self::style)]",
+                "//*[string-length(normalize-space()) > 0]"
+                "[not(self::script) and not(self::style)]",
             ]
         )
+
+        candidates = []
         for xpath in menu_xpaths:
             try:
-                wait.until(EC.element_to_be_clickable((By.XPATH, xpath))).click()
-                break
+                candidates.extend(driver.find_elements(By.XPATH, xpath))
             except Exception:  # noqa: BLE001
                 continue
-        else:
-            return False
 
+        visible_candidates = []
+        for element in candidates:
+            if not self._looks_like_topbar_switcher(element):
+                continue
+            clickable = self._closest_clickable(driver, element)
+            if clickable is not None and self._looks_like_topbar_switcher(clickable):
+                visible_candidates.append(clickable)
+            else:
+                visible_candidates.append(element)
+
+        if not visible_candidates:
+            return None
+        return min(visible_candidates, key=self._element_area)
+
+    def _find_visible_text_action(self, driver, text: str):
+        from selenium.webdriver.common.by import By
+
+        xpath = (
+            f"//*[contains(normalize-space(), {self._xpath_literal(text)})]"
+            "[not(self::script) and not(self::style)]"
+        )
+        candidates = []
+        for element in driver.find_elements(By.XPATH, xpath):
+            if not self._is_visible_action(element):
+                continue
+            clickable = self._closest_clickable(driver, element) or element
+            if self._is_visible_action(clickable):
+                candidates.append(clickable)
+            else:
+                candidates.append(element)
+        if not candidates:
+            return None
+        return min(candidates, key=self._element_area)
+
+    @staticmethod
+    def _first_visible(driver, xpath: str):
+        from selenium.webdriver.common.by import By
+
+        for element in driver.find_elements(By.XPATH, xpath):
+            try:
+                if element.is_displayed():
+                    return element
+            except Exception:  # noqa: BLE001
+                continue
+        return None
+
+    @staticmethod
+    def _looks_like_topbar_switcher(element) -> bool:
         try:
-            wait.until(
-                EC.element_to_be_clickable(
-                    (
-                        By.XPATH,
-                        "//*[self::button or @role='button' or self::a]"
-                        "[contains(normalize-space(), 'Создать организацию')]",
-                    )
-                )
-            ).click()
-            return True
+            if not element.is_displayed():
+                return False
+            rect = element.rect
+            text = (element.text or "").strip()
         except Exception:  # noqa: BLE001
             return False
+        if not text:
+            return False
+        x = float(rect.get("x") or 0)
+        y = float(rect.get("y") or 0)
+        width = float(rect.get("width") or 0)
+        height = float(rect.get("height") or 0)
+        return 45 <= y <= 240 and 80 <= x <= 540 and 10 <= height <= 90 and 80 <= width <= 520
+
+    @staticmethod
+    def _is_visible_action(element) -> bool:
+        try:
+            if not element.is_displayed():
+                return False
+            rect = element.rect
+            text = (element.text or "").strip()
+        except Exception:  # noqa: BLE001
+            return False
+        if not text:
+            return False
+        x = float(rect.get("x") or 0)
+        y = float(rect.get("y") or 0)
+        width = float(rect.get("width") or 0)
+        height = float(rect.get("height") or 0)
+        return 0 <= x <= 760 and 40 <= y <= 520 and 10 <= height <= 90 and 60 <= width <= 620
+
+    @staticmethod
+    def _element_area(element) -> float:
+        try:
+            rect = element.rect
+            return float(rect.get("width") or 0) * float(rect.get("height") or 0)
+        except Exception:  # noqa: BLE001
+            return 0
+
+    @staticmethod
+    def _closest_clickable(driver, element):
+        try:
+            return driver.execute_script(
+                """
+                let el = arguments[0];
+                while (el && el !== document.body && el !== document.documentElement) {
+                    const tag = (el.tagName || '').toLowerCase();
+                    const role = (el.getAttribute('role') || '').toLowerCase();
+                    const style = window.getComputedStyle(el);
+                    const tabIndex = el.getAttribute('tabindex');
+                    if (
+                        tag === 'button' ||
+                        tag === 'a' ||
+                        role === 'button' ||
+                        role === 'menuitem' ||
+                        tabIndex !== null ||
+                        style.cursor === 'pointer' ||
+                        typeof el.onclick === 'function'
+                    ) {
+                        return el;
+                    }
+                    el = el.parentElement;
+                }
+                return arguments[0];
+                """,
+                element,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _click_element(driver, element) -> None:
+        try:
+            element.click()
+            return
+        except Exception:  # noqa: BLE001
+            pass
+        driver.execute_script("arguments[0].click();", element)
+
+    @staticmethod
+    def _body_sample(driver) -> str:
+        from selenium.webdriver.common.by import By
+
+        try:
+            text = driver.find_element(By.TAG_NAME, "body").text
+        except Exception:  # noqa: BLE001
+            return "-"
+        return " ".join(text.split())[:500] or "-"
 
     @staticmethod
     def _close_optional_welcome(driver) -> None:
