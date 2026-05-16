@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -106,7 +107,7 @@ class CloudCenterOrganizationCreator:
 
             log_event(self.logger, "center.organization.wait_name_input")
             try:
-                name_input = wait.until(lambda browser: self._wait_for_create_form_input(browser))
+                name_input = self._wait_for_create_form_input_with_recovery(driver, create_url)
             except TimeoutException as exc:
                 probe = self._form_probe(driver)
                 screenshot = self._save_debug_screenshot(driver, "create-form-missing")
@@ -117,7 +118,7 @@ class CloudCenterOrganizationCreator:
                     **probe,
                 )
                 raise RuntimeError(
-                    "Cloud Center create form did not render in headless browser; "
+                    "Cloud Center create form did not render in Selenium browser; "
                     f"probe={probe}, screenshot={screenshot or '-'}"
                 ) from exc
             self._fill_input(driver, name_input, name)
@@ -156,7 +157,6 @@ class CloudCenterOrganizationCreator:
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-software-rasterizer")
-        options.add_argument("--disable-background-networking")
         options.add_argument("--no-first-run")
         options.add_argument("--no-default-browser-check")
         options.add_argument("--password-store=basic")
@@ -253,6 +253,37 @@ class CloudCenterOrganizationCreator:
         self._raise_if_login_required(driver, "wait for organization create form")
         return self._find_first_visible_form_input(driver)
 
+    def _wait_for_create_form_input_with_recovery(self, driver, create_url: str):
+        from selenium.common.exceptions import TimeoutException
+        from selenium.webdriver.support.ui import WebDriverWait
+
+        short_wait_seconds = max(8, min(int(self.settings.yc_center_wait_seconds), 15))
+        try:
+            return WebDriverWait(driver, short_wait_seconds).until(
+                lambda browser: self._wait_for_create_form_input(browser)
+            )
+        except TimeoutException:
+            probe = self._form_probe(driver)
+            log_event(self.logger, "center.organization.form_probe_initial", **probe)
+            if int(probe.get("html_length") or 0) > 1000 or int(probe.get("fields") or 0) > 0:
+                raise
+
+        center_url = self.settings.yc_center_url.rstrip("/") + "/"
+        log_event(self.logger, "center.organization.warmup_start", url=center_url)
+        driver.get(center_url)
+        time.sleep(3)
+        log_event(self.logger, "center.organization.warmup_done", **self._form_probe(driver))
+        driver.get(create_url)
+        log_event(
+            self.logger,
+            "center.organization.create_page_retry",
+            url=self._short_url(driver.current_url),
+            title=(driver.title or "-")[:120],
+        )
+        return WebDriverWait(driver, self.settings.yc_center_wait_seconds).until(
+            lambda browser: self._wait_for_create_form_input(browser)
+        )
+
     @staticmethod
     def _find_first_visible_form_input(driver):
         return driver.execute_script(
@@ -335,8 +366,7 @@ class CloudCenterOrganizationCreator:
             """
         )
 
-    @staticmethod
-    def _form_probe(driver) -> dict[str, object]:
+    def _form_probe(self, driver) -> dict[str, object]:
         try:
             data = driver.execute_script(
                 """
@@ -369,6 +399,9 @@ class CloudCenterOrganizationCreator:
                 const html = (document.documentElement && document.documentElement.outerHTML || '');
                 return {
                     ready_state: document.readyState || '-',
+                    location: String(window.location.href || '-'),
+                    user_agent: String(navigator.userAgent || '-').slice(0, 200),
+                    webdriver: Boolean(navigator.webdriver),
                     fields: fields.length,
                     visible_fields: fields.filter(visible).length,
                     buttons: buttons.length,
@@ -380,11 +413,18 @@ class CloudCenterOrganizationCreator:
                 """
             )
             if isinstance(data, dict):
+                data["headless"] = self.settings.yc_center_selenium_headless
+                data["display"] = os.environ.get("DISPLAY") or "-"
                 return data
         except Exception:  # noqa: BLE001
             pass
         return {
             "ready_state": "-",
+            "location": "-",
+            "user_agent": "-",
+            "webdriver": "-",
+            "headless": self.settings.yc_center_selenium_headless,
+            "display": os.environ.get("DISPLAY") or "-",
             "fields": -1,
             "visible_fields": -1,
             "buttons": -1,
