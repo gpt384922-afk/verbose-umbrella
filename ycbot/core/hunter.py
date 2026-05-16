@@ -320,6 +320,7 @@ class HunterEngine:
                                 pending_slots=pending_slots,
                                 clouds_api=clouds_api,
                                 billing_account_id=cloud.billing_account_id,
+                                proxy_url=account.proxy_url,
                                 stop_event=stop_event,
                             )
                             missed_clouds_in_org = 0
@@ -1057,6 +1058,7 @@ class HunterEngine:
         pending_slots: list[PendingCloudSlot],
         clouds_api: CloudsApi,
         billing_account_id: str,
+        proxy_url: str | None,
         stop_event: asyncio.Event,
     ) -> tuple[ScopeDescriptor, list[ManagedCloud], list[PendingCloudSlot]]:
         log_event(
@@ -1086,6 +1088,7 @@ class HunterEngine:
         created_name = await self._create_organization_via_selenium(
             next_name,
             current_organization_name=current_org_name,
+            proxy_url=proxy_url,
         )
         new_organization = await self._wait_for_new_organization(
             clouds_api=clouds_api,
@@ -1176,6 +1179,7 @@ class HunterEngine:
         name: str,
         *,
         current_organization_name: str | None,
+        proxy_url: str | None,
     ) -> str:
         if not getattr(self.settings, "hunt_organization_rotation_enabled", False):
             raise RuntimeError("organization rotation is disabled")
@@ -1185,6 +1189,7 @@ class HunterEngine:
             self._organization_creator.create_organization,
             name,
             current_organization_name=current_organization_name,
+            proxy_url=proxy_url,
         )
 
     async def _wait_for_new_organization(

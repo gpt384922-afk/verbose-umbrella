@@ -5,6 +5,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from ycbot.config import Settings
 from ycbot.utils import log_event
@@ -15,7 +16,7 @@ class CloudCenterOrganizationCreator:
     settings: Settings
     logger: object
 
-    def import_cookies(self, cookie_text: str) -> dict[str, object]:
+    def import_cookies(self, cookie_text: str, *, proxy_url: str | None = None) -> dict[str, object]:
         parsed_cookies = self._parse_cookies(cookie_text)
         cookies = [
             cookie
@@ -25,7 +26,7 @@ class CloudCenterOrganizationCreator:
         if not cookies:
             raise RuntimeError("cookie file has no supported cookies")
 
-        driver = self._build_driver()
+        driver = self._build_driver(proxy_url=proxy_url)
         self._configure_driver_timeouts(driver)
         imported = 0
         failed = 0
@@ -79,12 +80,18 @@ class CloudCenterOrganizationCreator:
         log_event(self.logger, "center.cookies.import_done", imported=imported, failed=failed)
         return {"imported": imported, "failed": failed, "domains": sorted(cookies_by_domain)}
 
-    def create_organization(self, name: str, *, current_organization_name: str | None = None) -> str:
+    def create_organization(
+        self,
+        name: str,
+        *,
+        current_organization_name: str | None = None,
+        proxy_url: str | None = None,
+    ) -> str:
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support import expected_conditions as EC
         from selenium.webdriver.support.ui import WebDriverWait
 
-        driver = self._build_driver()
+        driver = self._build_driver(proxy_url=proxy_url)
         wait = WebDriverWait(driver, self.settings.yc_center_wait_seconds)
         try:
             log_event(self.logger, "center.organization.create_start", name=name)
@@ -146,7 +153,7 @@ class CloudCenterOrganizationCreator:
             if self._should_quit_driver():
                 driver.quit()
 
-    def _build_driver(self):
+    def _build_driver(self, *, proxy_url: str | None = None):
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
 
@@ -161,7 +168,6 @@ class CloudCenterOrganizationCreator:
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
-        options.add_argument("--disable-extensions")
         options.add_argument("--disable-software-rasterizer")
         options.add_argument("--disable-background-networking")
         options.add_argument("--no-first-run")
@@ -172,6 +178,7 @@ class CloudCenterOrganizationCreator:
         options.add_argument("--window-size=1440,1200")
         if self.settings.yc_center_selenium_headless and not self.settings.yc_center_chrome_debugger_address:
             options.add_argument("--headless=new")
+        self._apply_proxy_options(options, proxy_url)
 
         log_event(
             self.logger,
@@ -181,6 +188,7 @@ class CloudCenterOrganizationCreator:
             headless=self.settings.yc_center_selenium_headless,
             remote=bool(self.settings.yc_center_selenium_remote_url),
             debugger=bool(self.settings.yc_center_chrome_debugger_address),
+            proxy=bool(proxy_url),
         )
         if self.settings.yc_center_selenium_remote_url:
             return webdriver.Remote(
@@ -188,6 +196,44 @@ class CloudCenterOrganizationCreator:
                 options=options,
             )
         return webdriver.Chrome(options=options)
+
+    def _apply_proxy_options(self, options, proxy_url: str | None) -> None:
+        if not proxy_url:
+            return
+        parsed = urlparse(proxy_url if "://" in proxy_url else f"http://{proxy_url}")
+        if not parsed.hostname or not parsed.port:
+            raise RuntimeError("proxy URL must include host and port")
+        scheme = parsed.scheme or "http"
+        proxy_server = f"{scheme}://{parsed.hostname}:{parsed.port}"
+        options.add_argument(f"--proxy-server={proxy_server}")
+        if parsed.username or parsed.password:
+            extension_dir = self._write_proxy_auth_extension(parsed)
+            options.add_argument(f"--load-extension={extension_dir}")
+
+    def _write_proxy_auth_extension(self, parsed) -> str:
+        import tempfile
+
+        extension_dir = tempfile.mkdtemp(prefix="ycbot-proxy-auth-")
+        manifest = {
+            "version": "1.0.0",
+            "manifest_version": 2,
+            "name": "YCBot proxy auth",
+            "permissions": ["proxy", "tabs", "unlimitedStorage", "storage", "<all_urls>", "webRequest", "webRequestBlocking"],
+            "background": {"scripts": ["background.js"]},
+            "minimum_chrome_version": "22.0.0",
+        }
+        username = unquote(parsed.username or "")
+        password = unquote(parsed.password or "")
+        background = (
+            "chrome.webRequest.onAuthRequired.addListener("
+            "function(details) { return {authCredentials: {"
+            f"username: {json.dumps(username)}, password: {json.dumps(password)}"
+            "}}; },"
+            "{urls: ['<all_urls>']}, ['blocking']);"
+        )
+        Path(extension_dir, "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        Path(extension_dir, "background.js").write_text(background, encoding="utf-8")
+        return extension_dir
 
     def _cleanup_stale_profile_locks(self) -> None:
         if (

@@ -16,6 +16,7 @@ from ycbot.bot.keyboards import (
     account_cookie_upload_keyboard,
     account_list_keyboard,
     account_org_test_confirm_keyboard,
+    account_proxy_update_keyboard,
     add_account_confirm_keyboard,
     add_account_nav_keyboard,
     add_branch_confirm_keyboard,
@@ -54,6 +55,10 @@ class AddAccountFlow(StatesGroup):
 
 class CookieUploadFlow(StatesGroup):
     file = State()
+
+
+class ProxyUpdateFlow(StatesGroup):
+    proxy = State()
 
 
 class StartHuntFlow(StatesGroup):
@@ -600,6 +605,78 @@ async def account_cookies_cancel(callback: CallbackQuery, state: FSMContext) -> 
         reply_markup=back_keyboard(f"accounts:view:{account_id}").as_markup() if account_id else back_keyboard("menu:accounts").as_markup(),
     )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("accounts:proxy_ask:"))
+async def account_proxy_ask(
+    callback: CallbackQuery,
+    state: FSMContext,
+    scheduler: HuntScheduler,
+    bot_scope: BotRuntimeScope,
+) -> None:
+    account_id = callback.data.split(":", maxsplit=2)[2]
+    details = await scheduler.account_details(account_id, branch_id=bot_scope.branch_id)
+    if details is None:
+        await callback.answer("Аккаунт не найден", show_alert=True)
+        return
+
+    await state.clear()
+    await state.set_state(ProxyUpdateFlow.proxy)
+    await state.update_data(account_id=account_id)
+    await _safe_edit_text(
+        callback.message,
+        f"🌐 <b>Прокси для Cloud Center/Selenium</b>\n\n"
+        f"{ce('key')} Аккаунт: <b>{escape(details['name'])}</b>\n"
+        f"Текущий proxy: {_code(_optional_display(details.get('proxy_url')))}\n\n"
+        + quote(
+            "Отправь proxy URL в формате http://host:port, socks5://host:port "
+            "или http://login:password@host:port. Отправь /skip, чтобы очистить proxy."
+        ),
+        reply_markup=account_proxy_update_keyboard(account_id).as_markup(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "accounts:proxy_cancel")
+async def account_proxy_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    account_id = data.get("account_id")
+    await state.clear()
+    await _safe_edit_text(
+        callback.message,
+        "🌐 <b>Изменение proxy отменено</b>",
+        reply_markup=back_keyboard(f"accounts:view:{account_id}").as_markup() if account_id else back_keyboard("menu:accounts").as_markup(),
+    )
+    await callback.answer()
+
+
+@router.message(ProxyUpdateFlow.proxy)
+async def account_proxy_update(
+    message: Message,
+    state: FSMContext,
+    scheduler: HuntScheduler,
+    bot_scope: BotRuntimeScope,
+) -> None:
+    data = await state.get_data()
+    account_id = data.get("account_id")
+    if not account_id:
+        await state.clear()
+        await message.answer("⚠️ Аккаунт не выбран.", reply_markup=back_keyboard("menu:accounts").as_markup())
+        return
+
+    proxy_url = _optional(message.text)
+    if proxy_url is not None and "://" not in proxy_url:
+        proxy_url = f"http://{proxy_url}"
+    updated = await scheduler.update_account_proxy(account_id, branch_id=bot_scope.branch_id, proxy_url=proxy_url)
+    await state.clear()
+    if not updated:
+        await message.answer("⚠️ Аккаунт не найден.", reply_markup=back_keyboard("menu:accounts").as_markup())
+        return
+    await message.answer(
+        "✅ <b>Proxy обновлен</b>\n\n"
+        f"Теперь Selenium для этого аккаунта будет использовать: {_code(_optional_display(proxy_url))}",
+        reply_markup=back_keyboard(f"accounts:view:{account_id}").as_markup(),
+    )
 
 
 @router.message(CookieUploadFlow.file)

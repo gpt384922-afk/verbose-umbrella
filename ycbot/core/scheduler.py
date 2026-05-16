@@ -253,6 +253,7 @@ class HuntScheduler:
                 creator.create_organization,
                 name,
                 current_organization_name=current_org_name,
+                proxy_url=account.proxy_url,
             )
 
             async with YcClient(
@@ -305,7 +306,7 @@ class HuntScheduler:
 
         async with self._account_lock(account_id):
             creator = CloudCenterOrganizationCreator(settings=self.settings, logger=self.logger)
-            result = await asyncio.to_thread(creator.import_cookies, cookie_text)
+            result = await asyncio.to_thread(creator.import_cookies, cookie_text, proxy_url=account.proxy_url)
 
         log_event(
             self.logger,
@@ -426,6 +427,16 @@ class HuntScheduler:
             await repo.deactivate_account(account_id)
             await session.commit()
         return True
+
+    async def update_account_proxy(self, account_id: str, *, branch_id: str | None, proxy_url: str | None) -> bool:
+        account = await self._get_account_for_branch(account_id, branch_id)
+        if account is None or not account.is_active:
+            return False
+        async with self.db.session() as session:
+            repo = AccountRepository(session)
+            updated = await repo.update_account_proxy(account_id, proxy_url)
+            await session.commit()
+        return updated
 
     async def add_branch(
         self,

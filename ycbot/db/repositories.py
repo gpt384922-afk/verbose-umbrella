@@ -161,6 +161,14 @@ class AccountRepository:
         account.is_active = False
         await self.session.flush()
 
+    async def update_account_proxy(self, account_id: str, proxy_url: str | None) -> bool:
+        account = await self.get_account(account_id)
+        if account is None or not account.is_active:
+            return False
+        account.proxy_url = proxy_url
+        await self.session.flush()
+        return True
+
     async def replace_organizations(self, account_id: str, organizations: list[dict]) -> None:
         await self.session.execute(delete(Organization).where(Organization.account_id == account_id))
         for item in organizations:

@@ -1033,11 +1033,12 @@ class HunterScopeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         hunter._set_cloud_progress = AsyncMock()
         hunter._replace_account_organizations = AsyncMock()
 
-        async def create_organization(name, *, current_organization_name):
+        async def create_organization(name, *, current_organization_name, proxy_url):
             nonlocal organization_created
             events.append("selenium-create-org")
             organization_created = True
             self.assertEqual("Old Org", current_organization_name)
+            self.assertIsNone(proxy_url)
             return "New Org"
 
         hunter._create_organization_via_selenium = AsyncMock(side_effect=create_organization)
@@ -1106,6 +1107,7 @@ class HunterScopeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             pending_slots=pending_slots,
             clouds_api=FakeCloudsApi(),
             billing_account_id="billing-1",
+            proxy_url=None,
             stop_event=asyncio.Event(),
         )
 

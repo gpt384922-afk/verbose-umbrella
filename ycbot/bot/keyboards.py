@@ -49,6 +49,7 @@ def account_detail_keyboard(account_id: str, *, secrets_visible: bool = False) -
             icon_custom_emoji_id=CUSTOM_EMOJI_IDS["key"],
         )
     kb.button(text="Загрузить cookies", callback_data=f"accounts:cookies_ask:{account_id}")
+    kb.button(text="Указать прокси", callback_data=f"accounts:proxy_ask:{account_id}")
     kb.button(text="Тест: создать организацию", callback_data=f"accounts:org_test_ask:{account_id}", style="success")
     kb.button(text="Удалить аккаунт", callback_data=f"accounts:delete_ask:{account_id}", style="danger")
     kb.button(text="Назад", callback_data="menu:accounts")
@@ -68,6 +69,14 @@ def account_cookie_upload_keyboard(account_id: str) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     kb.button(text="Назад", callback_data=f"accounts:view:{account_id}")
     kb.button(text="Отмена", callback_data="accounts:cookies_cancel", style="danger")
+    kb.adjust(1)
+    return kb
+
+
+def account_proxy_update_keyboard(account_id: str) -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Назад", callback_data=f"accounts:view:{account_id}")
+    kb.button(text="Отмена", callback_data="accounts:proxy_cancel", style="danger")
     kb.adjust(1)
     return kb
 
