@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 
 from ycbot.config import Settings
+from ycbot.utils import log_event
 
 
 @dataclass(slots=True)
@@ -13,27 +15,58 @@ class CloudCenterOrganizationCreator:
     logger: object
 
     def import_cookies(self, cookie_text: str) -> dict[str, object]:
-        cookies = self._parse_cookies(cookie_text)
+        parsed_cookies = self._parse_cookies(cookie_text)
+        cookies = [
+            cookie
+            for cookie in parsed_cookies
+            if self._is_supported_cookie_domain(str(cookie.get("domain") or ""))
+        ]
         if not cookies:
             raise RuntimeError("cookie file has no supported cookies")
 
         driver = self._build_driver()
+        self._configure_driver_timeouts(driver)
         imported = 0
         failed = 0
-        domains: set[str] = set()
+        cookies_by_domain: dict[str, list[dict[str, object]]] = defaultdict(list)
+        for cookie in cookies:
+            domain = str(cookie.get("domain") or "").lstrip(".").strip()
+            if domain:
+                cookies_by_domain[domain].append(cookie)
         try:
-            for cookie in cookies:
-                domain = str(cookie.get("domain") or "").lstrip(".").strip()
-                if not domain:
-                    failed += 1
-                    continue
-                domains.add(domain)
-                driver.get(f"https://{domain}/")
+            log_event(
+                self.logger,
+                "center.cookies.import_start",
+                parsed=len(parsed_cookies),
+                supported=len(cookies),
+                domains=len(cookies_by_domain),
+            )
+            for domain, domain_cookies in sorted(cookies_by_domain.items()):
                 try:
-                    driver.add_cookie(cookie)
-                    imported += 1
+                    driver.get(f"https://{domain}/")
                 except Exception:  # noqa: BLE001
-                    failed += 1
+                    # We only need the browser context to be on the right domain;
+                    # many Yandex endpoints block direct loads in headless mode.
+                    pass
+                domain_imported = 0
+                domain_failed = 0
+                for cookie in domain_cookies:
+                    try:
+                        safe_cookie = dict(cookie)
+                        safe_cookie["domain"] = str(safe_cookie["domain"])
+                        driver.add_cookie(safe_cookie)
+                        domain_imported += 1
+                    except Exception:  # noqa: BLE001
+                        domain_failed += 1
+                imported += domain_imported
+                failed += domain_failed
+                log_event(
+                    self.logger,
+                    "center.cookies.domain_imported",
+                    domain=domain,
+                    imported=domain_imported,
+                    failed=domain_failed,
+                )
             driver.get(self.settings.yc_center_url)
             time.sleep(1)
         finally:
@@ -42,7 +75,8 @@ class CloudCenterOrganizationCreator:
 
         if imported <= 0:
             raise RuntimeError("no cookies were imported into browser profile")
-        return {"imported": imported, "failed": failed, "domains": sorted(domains)}
+        log_event(self.logger, "center.cookies.import_done", imported=imported, failed=failed)
+        return {"imported": imported, "failed": failed, "domains": sorted(cookies_by_domain)}
 
     def create_organization(self, name: str, *, current_organization_name: str | None = None) -> str:
         from selenium.webdriver.common.by import By
@@ -110,6 +144,11 @@ class CloudCenterOrganizationCreator:
                 options=options,
             )
         return webdriver.Chrome(options=options)
+
+    def _configure_driver_timeouts(self, driver) -> None:
+        timeout = max(10, min(int(self.settings.yc_center_wait_seconds), 30))
+        driver.set_page_load_timeout(timeout)
+        driver.set_script_timeout(timeout)
 
     def _should_quit_driver(self) -> bool:
         if self.settings.yc_center_selenium_quit:
@@ -253,3 +292,15 @@ class CloudCenterOrganizationCreator:
         if expiry not in {"0", "-1"}:
             cookie["expiry"] = int(float(expiry))
         return cookie
+
+    @staticmethod
+    def _is_supported_cookie_domain(domain: str) -> bool:
+        cleaned = domain.lstrip(".").lower()
+        return (
+            cleaned == "yandex.ru"
+            or cleaned.endswith(".yandex.ru")
+            or cleaned == "yandex.com"
+            or cleaned.endswith(".yandex.com")
+            or cleaned == "yandex.cloud"
+            or cleaned.endswith(".yandex.cloud")
+        )
