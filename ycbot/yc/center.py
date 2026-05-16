@@ -87,26 +87,14 @@ class CloudCenterOrganizationCreator:
         current_organization_name: str | None = None,
         proxy_url: str | None = None,
     ) -> str:
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.support import expected_conditions as EC
         from selenium.webdriver.support.ui import WebDriverWait
 
         driver = self._build_driver(proxy_url=proxy_url)
         wait = WebDriverWait(driver, self.settings.yc_center_wait_seconds)
         try:
             log_event(self.logger, "center.organization.create_start", name=name)
-            driver.get(self.settings.yc_center_url)
-            log_event(
-                self.logger,
-                "center.organization.opened",
-                url=self._short_url(driver.current_url),
-                title=(driver.title or "-")[:120],
-            )
-            self._raise_if_login_required(driver, "open Cloud Center")
-            self._close_optional_welcome(driver)
-            if not self._open_create_page_from_menu(driver, current_organization_name):
-                log_event(self.logger, "center.organization.menu_fallback")
-                driver.get(self.settings.yc_center_url.rstrip("/") + "/create")
+            create_url = self.settings.yc_center_url.rstrip("/") + "/create"
+            driver.get(create_url)
             log_event(
                 self.logger,
                 "center.organization.create_page",
@@ -116,29 +104,12 @@ class CloudCenterOrganizationCreator:
             self._raise_if_login_required(driver, "open organization create page")
 
             log_event(self.logger, "center.organization.wait_name_input")
-            name_input = wait.until(
-                EC.element_to_be_clickable(
-                    (
-                        By.XPATH,
-                        "//label[contains(normalize-space(), 'Название')]/following::input[1]"
-                        " | //input[not(@type) or @type='text']",
-                    )
-                )
-            )
-            name_input.clear()
-            name_input.send_keys(name)
+            name_input = wait.until(lambda browser: self._find_first_visible_form_input(browser))
+            self._fill_input(driver, name_input, name)
             log_event(self.logger, "center.organization.name_filled", name=name)
 
-            create_button = wait.until(
-                EC.element_to_be_clickable(
-                    (
-                        By.XPATH,
-                        "//button[contains(normalize-space(), 'Создать новую организацию')]"
-                        " | //button[contains(normalize-space(), 'Создать')]",
-                    )
-                )
-            )
-            create_button.click()
+            create_button = wait.until(lambda browser: self._find_create_organization_button(browser))
+            self._click_element(driver, create_button)
             log_event(self.logger, "center.organization.submit_clicked", name=name)
             wait.until(lambda browser: "/create" not in browser.current_url)
             self._raise_if_login_required(driver, "submit organization create form")
@@ -262,6 +233,91 @@ class CloudCenterOrganizationCreator:
         timeout = max(10, min(int(self.settings.yc_center_wait_seconds), 30))
         driver.set_page_load_timeout(timeout)
         driver.set_script_timeout(timeout)
+
+    @staticmethod
+    def _find_first_visible_form_input(driver):
+        return driver.execute_script(
+            """
+            const fields = Array.from(document.querySelectorAll('input, textarea'))
+                .filter((el) => {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    const type = (el.getAttribute('type') || 'text').toLowerCase();
+                    return (
+                        rect.width > 40 &&
+                        rect.height > 10 &&
+                        rect.bottom > 0 &&
+                        rect.right > 0 &&
+                        rect.top < window.innerHeight &&
+                        rect.left < window.innerWidth &&
+                        style.visibility !== 'hidden' &&
+                        style.display !== 'none' &&
+                        !el.disabled &&
+                        !el.readOnly &&
+                        type !== 'hidden' &&
+                        type !== 'checkbox' &&
+                        type !== 'radio' &&
+                        type !== 'submit' &&
+                        type !== 'button'
+                    );
+                })
+                .sort((a, b) => {
+                    const ar = a.getBoundingClientRect();
+                    const br = b.getBoundingClientRect();
+                    if (ar.top !== br.top) return ar.top - br.top;
+                    return ar.left - br.left;
+                });
+            return fields[0] || null;
+            """
+        )
+
+    @staticmethod
+    def _find_create_organization_button(driver):
+        return driver.execute_script(
+            """
+            const candidates = Array.from(document.querySelectorAll('button, [role="button"], a'))
+                .filter((el) => {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    const text = (el.innerText || el.textContent || '').trim();
+                    return (
+                        text.includes('Создать новую организацию') &&
+                        rect.width > 40 &&
+                        rect.height > 10 &&
+                        rect.bottom > 0 &&
+                        rect.right > 0 &&
+                        rect.top < window.innerHeight &&
+                        rect.left < window.innerWidth &&
+                        style.visibility !== 'hidden' &&
+                        style.display !== 'none' &&
+                        !el.disabled &&
+                        el.getAttribute('aria-disabled') !== 'true'
+                    );
+                });
+            return candidates[0] || null;
+            """
+        )
+
+    @staticmethod
+    def _fill_input(driver, element, value: str) -> None:
+        try:
+            element.clear()
+            element.send_keys(value)
+            return
+        except Exception:  # noqa: BLE001
+            pass
+        driver.execute_script(
+            """
+            const element = arguments[0];
+            const value = arguments[1];
+            element.focus();
+            element.value = value;
+            element.dispatchEvent(new Event('input', {bubbles: true}));
+            element.dispatchEvent(new Event('change', {bubbles: true}));
+            """,
+            element,
+            value,
+        )
 
     @staticmethod
     def _raise_if_login_required(driver, action: str) -> None:
