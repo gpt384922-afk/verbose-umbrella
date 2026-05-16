@@ -204,6 +204,11 @@ class CloudCenterOrganizationCreator:
         if not parsed.hostname or not parsed.port:
             raise RuntimeError("proxy URL must include host and port")
         scheme = parsed.scheme or "http"
+        if scheme.startswith("socks") and (parsed.username or parsed.password):
+            raise RuntimeError(
+                "SOCKS proxy with login/password is not supported by Chromium in this mode; "
+                "use http://login:password@host:port or socks5://host:port without auth"
+            )
         proxy_server = f"{scheme}://{parsed.hostname}:{parsed.port}"
         options.add_argument(f"--proxy-server={proxy_server}")
         if parsed.username or parsed.password:
