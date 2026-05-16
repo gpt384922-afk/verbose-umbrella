@@ -104,6 +104,7 @@ class CloudCenterOrganizationCreator:
             self._raise_if_login_required(driver, "open organization create page")
 
             log_event(self.logger, "center.organization.wait_name_input")
+            log_event(self.logger, "center.organization.form_probe", **self._form_probe(driver))
             name_input = wait.until(lambda browser: self._find_first_visible_form_input(browser))
             self._fill_input(driver, name_input, name)
             log_event(self.logger, "center.organization.name_filled", name=name)
@@ -238,7 +239,16 @@ class CloudCenterOrganizationCreator:
     def _find_first_visible_form_input(driver):
         return driver.execute_script(
             """
-            const fields = Array.from(document.querySelectorAll('input, textarea'))
+            const collect = (root, acc = []) => {
+                try {
+                    acc.push(...root.querySelectorAll('input, textarea, [contenteditable="true"]'));
+                    for (const el of root.querySelectorAll('*')) {
+                        if (el.shadowRoot) collect(el.shadowRoot, acc);
+                    }
+                } catch (e) {}
+                return acc;
+            };
+            const fields = collect(document)
                 .filter((el) => {
                     const rect = el.getBoundingClientRect();
                     const style = window.getComputedStyle(el);
@@ -275,7 +285,16 @@ class CloudCenterOrganizationCreator:
     def _find_create_organization_button(driver):
         return driver.execute_script(
             """
-            const candidates = Array.from(document.querySelectorAll('button, [role="button"], a'))
+            const collect = (root, acc = []) => {
+                try {
+                    acc.push(...root.querySelectorAll('button, [role="button"], a'));
+                    for (const el of root.querySelectorAll('*')) {
+                        if (el.shadowRoot) collect(el.shadowRoot, acc);
+                    }
+                } catch (e) {}
+                return acc;
+            };
+            const candidates = collect(document)
                 .filter((el) => {
                     const rect = el.getBoundingClientRect();
                     const style = window.getComputedStyle(el);
@@ -297,6 +316,52 @@ class CloudCenterOrganizationCreator:
             return candidates[0] || null;
             """
         )
+
+    @staticmethod
+    def _form_probe(driver) -> dict[str, object]:
+        try:
+            data = driver.execute_script(
+                """
+                const collect = (root, selector, acc = []) => {
+                    try {
+                        acc.push(...root.querySelectorAll(selector));
+                        for (const el of root.querySelectorAll('*')) {
+                            if (el.shadowRoot) collect(el.shadowRoot, selector, acc);
+                        }
+                    } catch (e) {}
+                    return acc;
+                };
+                const visible = (el) => {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    return (
+                        rect.width > 0 &&
+                        rect.height > 0 &&
+                        rect.bottom > 0 &&
+                        rect.right > 0 &&
+                        rect.top < window.innerHeight &&
+                        rect.left < window.innerWidth &&
+                        style.visibility !== 'hidden' &&
+                        style.display !== 'none'
+                    );
+                };
+                const fields = collect(document, 'input, textarea, [contenteditable="true"]');
+                const buttons = collect(document, 'button, [role="button"], a');
+                const body = (document.body && document.body.innerText || '').replace(/\\s+/g, ' ').trim();
+                return {
+                    fields: fields.length,
+                    visible_fields: fields.filter(visible).length,
+                    buttons: buttons.length,
+                    visible_buttons: buttons.filter(visible).length,
+                    body: body.slice(0, 500) || '-',
+                };
+                """
+            )
+            if isinstance(data, dict):
+                return data
+        except Exception:  # noqa: BLE001
+            pass
+        return {"fields": -1, "visible_fields": -1, "buttons": -1, "visible_buttons": -1, "body": "-"}
 
     @staticmethod
     def _fill_input(driver, element, value: str) -> None:
