@@ -253,7 +253,7 @@ class HuntScheduler:
                 creator.create_organization,
                 name,
                 current_organization_name=current_org_name,
-                proxy_url=account.proxy_url,
+                proxy_url=account.center_proxy_url,
             )
 
             async with YcClient(
@@ -306,7 +306,7 @@ class HuntScheduler:
 
         async with self._account_lock(account_id):
             creator = CloudCenterOrganizationCreator(settings=self.settings, logger=self.logger)
-            result = await asyncio.to_thread(creator.import_cookies, cookie_text, proxy_url=account.proxy_url)
+            result = await asyncio.to_thread(creator.import_cookies, cookie_text, proxy_url=account.center_proxy_url)
 
         log_event(
             self.logger,
@@ -356,6 +356,7 @@ class HuntScheduler:
                         "name": account.name,
                         "email": account.email,
                         "proxy_url": account.proxy_url,
+                        "center_proxy_url": account.center_proxy_url,
                         "organizations": overview["organizations"],
                         "clouds": overview["clouds"],
                         "active_billing": overview["active_billing"],
@@ -399,6 +400,7 @@ class HuntScheduler:
             "password": account.password,
             "secret": account.secret,
             "proxy_url": account.proxy_url,
+            "center_proxy_url": account.center_proxy_url,
             "organizations": [
                 {"id": org.external_id, "name": org.name, "state": org.state}
                 for org in organizations
@@ -428,13 +430,19 @@ class HuntScheduler:
             await session.commit()
         return True
 
-    async def update_account_proxy(self, account_id: str, *, branch_id: str | None, proxy_url: str | None) -> bool:
+    async def update_account_center_proxy(
+        self,
+        account_id: str,
+        *,
+        branch_id: str | None,
+        center_proxy_url: str | None,
+    ) -> bool:
         account = await self._get_account_for_branch(account_id, branch_id)
         if account is None or not account.is_active:
             return False
         async with self.db.session() as session:
             repo = AccountRepository(session)
-            updated = await repo.update_account_proxy(account_id, proxy_url)
+            updated = await repo.update_account_center_proxy(account_id, center_proxy_url)
             await session.commit()
         return updated
 

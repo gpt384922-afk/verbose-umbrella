@@ -122,7 +122,8 @@ def _account_text(details: dict, *, reveal_secrets: bool) -> str:
             f"Email: {_code(_optional_display(details.get('email')))}\n"
             f"Password: {_code(_optional_display(details.get('password')))}\n"
             f"Secret: {_code(_optional_display(details.get('secret')))}\n"
-            f"Proxy: {_code(_optional_display(details.get('proxy_url')))}"
+            f"API proxy: {_code(_optional_display(details.get('proxy_url')))}\n"
+            f"Center proxy: {_code(_optional_display(details.get('center_proxy_url')))}"
         )
     else:
         access_lines = (
@@ -130,7 +131,8 @@ def _account_text(details: dict, *, reveal_secrets: bool) -> str:
             f"Email: {_code(_optional_display(details.get('email')))}\n"
             f"Password: {_code(_secret_status(details.get('password')))}\n"
             f"Secret: {_code(_secret_status(details.get('secret')))}\n"
-            f"Proxy: {_code(_optional_display(details.get('proxy_url')))}"
+            f"API proxy: {_code(_optional_display(details.get('proxy_url')))}\n"
+            f"Center proxy: {_code(_optional_display(details.get('center_proxy_url')))}"
         )
 
     return (
@@ -625,9 +627,9 @@ async def account_proxy_ask(
     await state.update_data(account_id=account_id)
     await _safe_edit_text(
         callback.message,
-        f"🌐 <b>Прокси для Cloud Center/Selenium</b>\n\n"
+        f"🌐 <b>Center proxy для Selenium</b>\n\n"
         f"{ce('key')} Аккаунт: <b>{escape(details['name'])}</b>\n"
-        f"Текущий proxy: {_code(_optional_display(details.get('proxy_url')))}\n\n"
+        f"Текущий center proxy: {_code(_optional_display(details.get('center_proxy_url')))}\n\n"
         + quote(
             "Отправь proxy URL в формате http://host:port, socks5://host:port "
             "или http://login:password@host:port. Отправь /skip, чтобы очистить proxy."
@@ -667,14 +669,18 @@ async def account_proxy_update(
     proxy_url = _optional(message.text)
     if proxy_url is not None and "://" not in proxy_url:
         proxy_url = f"http://{proxy_url}"
-    updated = await scheduler.update_account_proxy(account_id, branch_id=bot_scope.branch_id, proxy_url=proxy_url)
+    updated = await scheduler.update_account_center_proxy(
+        account_id,
+        branch_id=bot_scope.branch_id,
+        center_proxy_url=proxy_url,
+    )
     await state.clear()
     if not updated:
         await message.answer("⚠️ Аккаунт не найден.", reply_markup=back_keyboard("menu:accounts").as_markup())
         return
     await message.answer(
         "✅ <b>Proxy обновлен</b>\n\n"
-        f"Теперь Selenium для этого аккаунта будет использовать: {_code(_optional_display(proxy_url))}",
+        f"Теперь Cloud Center/Selenium для этого аккаунта будет использовать: {_code(_optional_display(proxy_url))}",
         reply_markup=back_keyboard(f"accounts:view:{account_id}").as_markup(),
     )
 

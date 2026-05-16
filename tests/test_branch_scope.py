@@ -34,7 +34,7 @@ class BranchScopeUiTests(unittest.TestCase):
         self.assertTrue(any(button.callback_data == "accounts:org_test_ask:acc-1" for button in buttons))
         self.assertTrue(any(button.text == "Загрузить cookies" for button in buttons))
         self.assertTrue(any(button.callback_data == "accounts:cookies_ask:acc-1" for button in buttons))
-        self.assertTrue(any(button.text == "Указать прокси" for button in buttons))
+        self.assertTrue(any(button.text == "Указать center proxy" for button in buttons))
         self.assertTrue(any(button.callback_data == "accounts:proxy_ask:acc-1" for button in buttons))
 
     def test_hunt_detail_text_shows_runtime_and_ip_metrics_without_deletion_words(self) -> None:

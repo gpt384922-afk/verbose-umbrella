@@ -40,6 +40,17 @@ class Database:
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             if self._engine.dialect.name == "postgresql":
+                await conn.execute(text("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS center_proxy_url VARCHAR(512)"))
+                await conn.execute(
+                    text(
+                        """
+                        UPDATE accounts
+                        SET center_proxy_url = proxy_url
+                        WHERE center_proxy_url IS NULL AND proxy_url IS NOT NULL
+                        """
+                    )
+                )
+                await conn.execute(text("UPDATE accounts SET proxy_url = NULL WHERE center_proxy_url IS NOT NULL"))
                 await conn.execute(
                     text(
                         """
@@ -80,6 +91,21 @@ class Database:
                         """
                     )
                 )
+            elif self._engine.dialect.name == "sqlite":
+                rows = await conn.execute(text("PRAGMA table_info(accounts)"))
+                account_columns = {row[1] for row in rows}
+                if "center_proxy_url" not in account_columns:
+                    await conn.execute(text("ALTER TABLE accounts ADD COLUMN center_proxy_url VARCHAR(512)"))
+                await conn.execute(
+                    text(
+                        """
+                        UPDATE accounts
+                        SET center_proxy_url = proxy_url
+                        WHERE center_proxy_url IS NULL AND proxy_url IS NOT NULL
+                        """
+                    )
+                )
+                await conn.execute(text("UPDATE accounts SET proxy_url = NULL WHERE center_proxy_url IS NOT NULL"))
 
     @asynccontextmanager
     async def session(self) -> AsyncSession:

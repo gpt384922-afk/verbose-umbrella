@@ -32,6 +32,7 @@ class Account(IdMixin, TimestampMixin, Base):
     password: Mapped[str | None] = mapped_column(Text, nullable=True)
     secret: Mapped[str | None] = mapped_column(Text, nullable=True)
     proxy_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    center_proxy_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     organizations: Mapped[list[Organization]] = relationship(back_populates="account")

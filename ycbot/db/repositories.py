@@ -115,6 +115,7 @@ class AccountRepository:
             password=password,
             secret=secret,
             proxy_url=proxy_url,
+            center_proxy_url=None,
             is_active=True,
         )
         self.session.add(account)
@@ -166,6 +167,14 @@ class AccountRepository:
         if account is None or not account.is_active:
             return False
         account.proxy_url = proxy_url
+        await self.session.flush()
+        return True
+
+    async def update_account_center_proxy(self, account_id: str, center_proxy_url: str | None) -> bool:
+        account = await self.get_account(account_id)
+        if account is None or not account.is_active:
+            return False
+        account.center_proxy_url = center_proxy_url
         await self.session.flush()
         return True
 

@@ -320,7 +320,7 @@ class HunterEngine:
                                 pending_slots=pending_slots,
                                 clouds_api=clouds_api,
                                 billing_account_id=cloud.billing_account_id,
-                                proxy_url=account.proxy_url,
+                                proxy_url=getattr(account, "center_proxy_url", None),
                                 stop_event=stop_event,
                             )
                             missed_clouds_in_org = 0
