@@ -87,6 +87,7 @@ class CloudCenterOrganizationCreator:
         current_organization_name: str | None = None,
         proxy_url: str | None = None,
     ) -> str:
+        from selenium.common.exceptions import TimeoutException
         from selenium.webdriver.support.ui import WebDriverWait
 
         driver = self._build_driver(proxy_url=proxy_url)
@@ -104,8 +105,21 @@ class CloudCenterOrganizationCreator:
             self._raise_if_login_required(driver, "open organization create page")
 
             log_event(self.logger, "center.organization.wait_name_input")
-            log_event(self.logger, "center.organization.form_probe", **self._form_probe(driver))
-            name_input = wait.until(lambda browser: self._find_first_visible_form_input(browser))
+            try:
+                name_input = wait.until(lambda browser: self._wait_for_create_form_input(browser))
+            except TimeoutException as exc:
+                probe = self._form_probe(driver)
+                screenshot = self._save_debug_screenshot(driver, "create-form-missing")
+                log_event(
+                    self.logger,
+                    "center.organization.form_missing",
+                    screenshot=screenshot or "-",
+                    **probe,
+                )
+                raise RuntimeError(
+                    "Cloud Center create form did not render in headless browser; "
+                    f"probe={probe}, screenshot={screenshot or '-'}"
+                ) from exc
             self._fill_input(driver, name_input, name)
             log_event(self.logger, "center.organization.name_filled", name=name)
 
@@ -235,6 +249,10 @@ class CloudCenterOrganizationCreator:
         driver.set_page_load_timeout(timeout)
         driver.set_script_timeout(timeout)
 
+    def _wait_for_create_form_input(self, driver):
+        self._raise_if_login_required(driver, "wait for organization create form")
+        return self._find_first_visible_form_input(driver)
+
     @staticmethod
     def _find_first_visible_form_input(driver):
         return driver.execute_script(
@@ -248,7 +266,7 @@ class CloudCenterOrganizationCreator:
                 } catch (e) {}
                 return acc;
             };
-            const fields = collect(document)
+                const fields = collect(document)
                 .filter((el) => {
                     const rect = el.getBoundingClientRect();
                     const style = window.getComputedStyle(el);
@@ -348,11 +366,15 @@ class CloudCenterOrganizationCreator:
                 const fields = collect(document, 'input, textarea, [contenteditable="true"]');
                 const buttons = collect(document, 'button, [role="button"], a');
                 const body = (document.body && document.body.innerText || '').replace(/\\s+/g, ' ').trim();
+                const html = (document.documentElement && document.documentElement.outerHTML || '');
                 return {
+                    ready_state: document.readyState || '-',
                     fields: fields.length,
                     visible_fields: fields.filter(visible).length,
                     buttons: buttons.length,
                     visible_buttons: buttons.filter(visible).length,
+                    iframes: document.querySelectorAll('iframe').length,
+                    html_length: html.length,
                     body: body.slice(0, 500) || '-',
                 };
                 """
@@ -361,7 +383,27 @@ class CloudCenterOrganizationCreator:
                 return data
         except Exception:  # noqa: BLE001
             pass
-        return {"fields": -1, "visible_fields": -1, "buttons": -1, "visible_buttons": -1, "body": "-"}
+        return {
+            "ready_state": "-",
+            "fields": -1,
+            "visible_fields": -1,
+            "buttons": -1,
+            "visible_buttons": -1,
+            "iframes": -1,
+            "html_length": -1,
+            "body": "-",
+        }
+
+    def _save_debug_screenshot(self, driver, reason: str) -> str | None:
+        directory = Path(self.settings.yc_center_chrome_user_data_dir or "/tmp").parent
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / f"yc-center-{reason}-{int(time.time())}.png"
+            if driver.save_screenshot(str(path)):
+                return str(path)
+        except Exception:  # noqa: BLE001
+            return None
+        return None
 
     @staticmethod
     def _fill_input(driver, element, value: str) -> None:
