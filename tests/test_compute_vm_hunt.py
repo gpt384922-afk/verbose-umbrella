@@ -859,13 +859,14 @@ class HunterScopeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(accepted_after_target)
         self.assertTrue(reached)
 
-    async def test_ensure_scope_clouds_creates_only_one_active_hunt_cloud(self) -> None:
+    async def test_ensure_scope_clouds_creates_parallel_hunt_cloud_pool(self) -> None:
         state = SimpleNamespace()
         state.get_hunt = AsyncMock(return_value=SimpleNamespace(cloud_states={}))
         state.register_cloud = AsyncMock()
         hunter = HunterEngine(
             settings=SimpleNamespace(
                 hunt_cloud_target_count=5,
+                hunt_parallel_cloud_count=5,
             ),
             db=SimpleNamespace(),
             state=state,
@@ -914,12 +915,12 @@ class HunterScopeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             asyncio.Event(),
         )
 
-        self.assertEqual(1, len(candidates))
-        self.assertEqual("cloud-1", candidates[0].cloud_id)
-        self.assertEqual(1, len(clouds_api.created))
+        self.assertEqual(5, len(candidates))
+        self.assertEqual([f"cloud-{index}" for index in range(1, 6)], [item.cloud_id for item in candidates])
+        self.assertEqual(5, len(clouds_api.created))
         self.assertEqual([], pending_slots)
 
-    async def test_run_scope_hunts_only_one_ready_cloud_at_a_time(self) -> None:
+    async def test_run_scope_hunts_ready_clouds_in_parallel(self) -> None:
         state = SimpleNamespace()
         state.set_cloud_lifecycle = AsyncMock()
         state.get_hunt = AsyncMock(
@@ -934,6 +935,8 @@ class HunterScopeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             settings=SimpleNamespace(
                 hunt_cycles_per_cloud=1,
                 hunt_cloud_target_count=5,
+                hunt_parallel_cloud_count=5,
+                hunt_organization_rotation_enabled=False,
             ),
             db=SimpleNamespace(),
             state=state,
@@ -965,7 +968,7 @@ class HunterScopeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             return True
 
         async def scope_targets_reached(*args, **kwargs):
-            return completed >= 1
+            return completed >= len(clouds)
 
         hunter._get_account = AsyncMock(return_value=SimpleNamespace(oauth_token="token", proxy_url=None))
         hunter._ensure_scope_clouds = AsyncMock(return_value=(clouds, []))
@@ -1003,8 +1006,8 @@ class HunterScopeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                 VmHuntConfig.default(),
             )
 
-        self.assertEqual(1, hunter._hunt_cloud_once.await_count)
-        self.assertEqual(1, max_in_flight)
+        self.assertEqual(3, hunter._hunt_cloud_once.await_count)
+        self.assertEqual(3, max_in_flight)
         hunter._delete_cloud_for_replacement.assert_not_awaited()
 
     async def test_organization_rotation_waits_deletions_then_creates_first_cloud(self) -> None:
@@ -1014,6 +1017,7 @@ class HunterScopeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         hunter = HunterEngine(
             settings=SimpleNamespace(
                 hunt_cloud_target_count=5,
+                hunt_parallel_cloud_count=5,
                 hunt_cycles_per_cloud=1,
                 hunt_organization_rotation_enabled=True,
                 hunt_organization_rotation_cloud_miss_count=5,
@@ -1081,11 +1085,12 @@ class HunterScopeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
 
             async def create_cloud_with_folder(self, *, organization_id, name, billing_account_id):
                 events.append(f"create-cloud:{organization_id}")
-                self_assert_order = events.index("create-cloud:org-new")
-                test_case.assertLess(events.index("deleted-cloud"), self_assert_order)
-                test_case.assertLess(events.index("deleted-pending"), self_assert_order)
+                create_order = events.index("create-cloud:org-new")
+                test_case.assertLess(events.index("deleted-cloud"), create_order)
+                test_case.assertLess(events.index("deleted-pending"), create_order)
+                cloud_number = events.count("create-cloud:org-new")
                 cloud = SimpleNamespace(
-                    id="cloud-new",
+                    id=f"cloud-new-{cloud_number}",
                     name=name,
                     organization_id=organization_id,
                     state=DbCloudState.ACTIVE,
@@ -1105,7 +1110,7 @@ class HunterScopeConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual("org-new", new_scope.organization_id)
-        self.assertEqual(["cloud-new"], [item.cloud_id for item in candidates])
+        self.assertEqual([f"cloud-new-{index}" for index in range(1, 6)], [item.cloud_id for item in candidates])
         self.assertEqual([], new_pending)
         self.assertEqual([], deleting)
         self.assertEqual([], pending_slots)

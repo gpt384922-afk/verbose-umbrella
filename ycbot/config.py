@@ -90,6 +90,7 @@ class Settings(BaseSettings):
     yc_cloud_slot_wait_timeout_seconds: int = Field(default=259200, alias="YC_CLOUD_SLOT_WAIT_TIMEOUT_SECONDS")
 
     hunt_cloud_target_count: int = Field(default=5, alias="HUNT_CLOUD_TARGET_COUNT")
+    hunt_parallel_cloud_count: int = Field(default=5, alias="HUNT_PARALLEL_CLOUD_COUNT")
     hunt_cycles_per_cloud: int = Field(default=4, alias="HUNT_CYCLES_PER_CLOUD")
     hunt_ips_per_cycle: int = Field(default=2, alias="HUNT_IPS_PER_CYCLE")
     hunt_poll_min_seconds: int = Field(default=3, alias="HUNT_POLL_MIN_SECONDS")
@@ -120,11 +121,12 @@ class Settings(BaseSettings):
         alias="HUNT_ORGANIZATION_ROTATION_CLOUD_MISS_COUNT",
     )
     yc_center_url: str = Field(default="https://center.yandex.cloud/", alias="YC_CENTER_URL")
+    yc_center_auto_install_browser: bool = Field(default=True, alias="YC_CENTER_AUTO_INSTALL_BROWSER")
     yc_center_selenium_remote_url: str | None = Field(default=None, alias="YC_CENTER_SELENIUM_REMOTE_URL")
     yc_center_chrome_binary: str | None = Field(default=None, alias="YC_CENTER_CHROME_BINARY")
-    yc_center_chrome_user_data_dir: str | None = Field(default=None, alias="YC_CENTER_CHROME_USER_DATA_DIR")
+    yc_center_chrome_user_data_dir: str | None = Field(default=".ycbot/chrome-profile", alias="YC_CENTER_CHROME_USER_DATA_DIR")
     yc_center_chrome_debugger_address: str | None = Field(default=None, alias="YC_CENTER_CHROME_DEBUGGER_ADDRESS")
-    yc_center_selenium_headless: bool = Field(default=False, alias="YC_CENTER_SELENIUM_HEADLESS")
+    yc_center_selenium_headless: bool = Field(default=True, alias="YC_CENTER_SELENIUM_HEADLESS")
     yc_center_selenium_quit: bool = Field(default=False, alias="YC_CENTER_SELENIUM_QUIT")
     yc_center_wait_seconds: int = Field(default=90, alias="YC_CENTER_WAIT_SECONDS")
     yc_center_org_name_prefix: str = Field(default="ycbot-org", alias="YC_CENTER_ORG_NAME_PREFIX")

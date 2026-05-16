@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import BytesIO
 from html import escape
 
 from aiogram import Bot, F, Router
@@ -12,7 +13,9 @@ from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup
 from ycbot.bot.keyboards import (
     account_delete_confirm_keyboard,
     account_detail_keyboard,
+    account_cookie_upload_keyboard,
     account_list_keyboard,
+    account_org_test_confirm_keyboard,
     add_account_confirm_keyboard,
     add_account_nav_keyboard,
     add_branch_confirm_keyboard,
@@ -47,6 +50,10 @@ class AddAccountFlow(StatesGroup):
     password = State()
     secret = State()
     confirm = State()
+
+
+class CookieUploadFlow(StatesGroup):
+    file = State()
 
 
 class StartHuntFlow(StatesGroup):
@@ -550,6 +557,161 @@ async def account_secrets(callback: CallbackQuery, scheduler: HuntScheduler, bot
         reply_markup=account_detail_keyboard(account_id, secrets_visible=True).as_markup(),
     )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("accounts:cookies_ask:"))
+async def account_cookies_ask(
+    callback: CallbackQuery,
+    state: FSMContext,
+    scheduler: HuntScheduler,
+    bot_scope: BotRuntimeScope,
+) -> None:
+    account_id = callback.data.split(":", maxsplit=2)[2]
+    details = await scheduler.account_details(account_id, branch_id=bot_scope.branch_id)
+    if details is None:
+        await callback.answer("Аккаунт не найден", show_alert=True)
+        return
+
+    await state.clear()
+    await state.set_state(CookieUploadFlow.file)
+    await state.update_data(account_id=account_id)
+    await _safe_edit_text(
+        callback.message,
+        f"🍪 <b>Загрузка cookies для Cloud Center</b>\n\n"
+        f"{ce('key')} Аккаунт: <b>{escape(details['name'])}</b>\n\n"
+        + quote(
+            "Отправь файл cookies в формате JSON из расширения Cookie-Editor/EditThisCookie "
+            "или Netscape cookies.txt. Бот импортирует их в Chrome profile на VPS и не сохранит "
+            "сырой файл в базе."
+        ),
+        reply_markup=account_cookie_upload_keyboard(account_id).as_markup(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "accounts:cookies_cancel")
+async def account_cookies_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    account_id = data.get("account_id")
+    await state.clear()
+    await _safe_edit_text(
+        callback.message,
+        "🍪 <b>Загрузка cookies отменена</b>",
+        reply_markup=back_keyboard(f"accounts:view:{account_id}").as_markup() if account_id else back_keyboard("menu:accounts").as_markup(),
+    )
+    await callback.answer()
+
+
+@router.message(CookieUploadFlow.file)
+async def account_cookies_file(
+    message: Message,
+    state: FSMContext,
+    scheduler: HuntScheduler,
+    bot_scope: BotRuntimeScope,
+    bot: Bot,
+) -> None:
+    data = await state.get_data()
+    account_id = data.get("account_id")
+    if not account_id:
+        await state.clear()
+        await message.answer("⚠️ Аккаунт не выбран.", reply_markup=back_keyboard("menu:accounts").as_markup())
+        return
+
+    cookie_text: str | None = None
+    if message.document:
+        if message.document.file_size and message.document.file_size > 2_000_000:
+            await message.answer("⚠️ Файл слишком большой. Отправь cookies до 2 MB.")
+            return
+        buffer = BytesIO()
+        await bot.download(message.document, destination=buffer)
+        try:
+            cookie_text = buffer.getvalue().decode("utf-8")
+        except UnicodeDecodeError:
+            await message.answer("⚠️ Не смог прочитать файл как UTF-8. Экспортируй cookies в .json или .txt.")
+            return
+    elif message.text:
+        cookie_text = message.text
+
+    if not cookie_text:
+        await message.answer("⚠️ Отправь cookies файлом .json/.txt или текстом.")
+        return
+
+    status = await message.answer(f"{ce('diamond')} <b>Импортирую cookies</b>\n\nОткрываю Selenium-профиль на VPS...")
+    try:
+        result = await scheduler.import_center_cookies(
+            account_id,
+            branch_id=bot_scope.branch_id,
+            cookie_text=cookie_text,
+        )
+    except Exception as exc:  # noqa: BLE001
+        await status.edit_text(
+            _error_message("Не удалось импортировать cookies", exc),
+            reply_markup=back_keyboard(f"accounts:view:{account_id}").as_markup(),
+        )
+        return
+
+    await state.clear()
+    domains = ", ".join(result.get("domains", [])[:8])
+    await status.edit_text(
+        "✅ <b>Cookies импортированы</b>\n\n"
+        f"Импортировано: <b>{result.get('imported')}</b>\n"
+        f"Ошибок: <b>{result.get('failed')}</b>\n"
+        f"Домены: {_code(domains or '-')}\n\n"
+        "Теперь можно нажать «Тест: создать организацию» для проверки сессии.",
+        reply_markup=back_keyboard(f"accounts:view:{account_id}").as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("accounts:org_test_ask:"))
+async def account_org_test_ask(callback: CallbackQuery, scheduler: HuntScheduler, bot_scope: BotRuntimeScope) -> None:
+    account_id = callback.data.split(":", maxsplit=2)[2]
+    details = await scheduler.account_details(account_id, branch_id=bot_scope.branch_id)
+    if details is None:
+        await callback.answer("Аккаунт не найден", show_alert=True)
+        return
+
+    await _safe_edit_text(
+        callback.message,
+        f"🧪 <b>Тест создания организации</b>\n\n"
+        f"{ce('key')} Аккаунт: <b>{escape(details['name'])}</b>\n\n"
+        + quote(
+            "Бот откроет Cloud Center через Selenium, создаст реальную организацию "
+            "с тестовым именем и затем проверит, что выбранный OAuth-аккаунт видит ее через API."
+        ),
+        reply_markup=account_org_test_confirm_keyboard(account_id).as_markup(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("accounts:org_test_confirm:"))
+async def account_org_test_confirm(callback: CallbackQuery, scheduler: HuntScheduler, bot_scope: BotRuntimeScope) -> None:
+    account_id = callback.data.split(":", maxsplit=2)[2]
+    await callback.answer()
+    await _safe_edit_text(
+        callback.message,
+        f"{ce('diamond')} <b>Создаю тестовую организацию</b>\n\n"
+        "Открываю Cloud Center через Selenium. Это может занять до минуты.",
+    )
+
+    try:
+        result = await scheduler.create_test_organization(account_id, branch_id=bot_scope.branch_id)
+    except Exception as exc:  # noqa: BLE001
+        await _safe_edit_text(
+            callback.message,
+            _error_message("Не удалось создать тестовую организацию", exc),
+            reply_markup=back_keyboard(f"accounts:view:{account_id}").as_markup(),
+        )
+        return
+
+    await _safe_edit_text(
+        callback.message,
+        "✅ <b>Тестовая организация создана</b>\n\n"
+        f"{ce('crown')} Название: {_code(result['name'])}\n"
+        f"{ce('diamond')} ID: {_code(result['id'])}\n"
+        f"{ce('crown')} Организаций в аккаунте: <b>{result['organizations']}</b>\n"
+        f"{ce('diamond')} Платежных аккаунтов: <b>{result['billing_accounts']}</b>",
+        reply_markup=back_keyboard(f"accounts:view:{account_id}").as_markup(),
+    )
 
 
 @router.callback_query(F.data.startswith("accounts:delete_ask:"))

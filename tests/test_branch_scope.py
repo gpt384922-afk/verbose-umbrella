@@ -7,10 +7,12 @@ from unittest.mock import AsyncMock, patch
 
 from ycbot.bot.app import AccessMiddleware, BranchBotManager, SchedulerMiddleware
 from ycbot.bot.handlers import _hunt_detail_text
+from ycbot.bot.keyboards import account_detail_keyboard
 from ycbot.bot.runtime import BotRuntimeScope
 from ycbot.core.scheduler import HuntScheduler
 from ycbot.bot.ui import main_menu_text
 from ycbot.db.repositories import BranchRepository
+from ycbot.yc.center import CloudCenterOrganizationCreator
 
 
 class BranchScopeUiTests(unittest.TestCase):
@@ -23,6 +25,15 @@ class BranchScopeUiTests(unittest.TestCase):
         text = main_menu_text(can_manage_branches=True)
 
         self.assertIn("Филиалы", text)
+
+    def test_account_detail_has_test_organization_button(self) -> None:
+        markup = account_detail_keyboard("acc-1").as_markup()
+        buttons = [button for row in markup.inline_keyboard for button in row]
+
+        self.assertTrue(any(button.text == "Тест: создать организацию" for button in buttons))
+        self.assertTrue(any(button.callback_data == "accounts:org_test_ask:acc-1" for button in buttons))
+        self.assertTrue(any(button.text == "Загрузить cookies" for button in buttons))
+        self.assertTrue(any(button.callback_data == "accounts:cookies_ask:acc-1" for button in buttons))
 
     def test_hunt_detail_text_shows_runtime_and_ip_metrics_without_deletion_words(self) -> None:
         text = _hunt_detail_text(
@@ -157,6 +168,51 @@ class SchedulerAccountDeletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(deleted)
         self.assertEqual("acc-1", session.deactivated_account_id)
         self.assertTrue(session.committed)
+
+
+class SchedulerOrganizationTestTests(unittest.TestCase):
+    def test_next_test_organization_name_uses_center_prefix(self) -> None:
+        scheduler = HuntScheduler(
+            settings=SimpleNamespace(yc_center_org_name_prefix="demo-org"),
+            db=SimpleNamespace(),
+            state=SimpleNamespace(),
+            hunter=SimpleNamespace(),
+            semaphore=SimpleNamespace(),
+            logger=logging.getLogger("test"),
+        )
+
+        name = scheduler._next_test_organization_name()
+
+        self.assertTrue(name.startswith("demo-org-test-"))
+
+
+class CloudCenterCookieTests(unittest.TestCase):
+    def test_parse_json_cookie_export(self) -> None:
+        cookies = CloudCenterOrganizationCreator._parse_cookies(
+            '[{"domain": ".yandex.ru", "name": "Session_id", "value": "abc", "path": "/", "secure": true, "expirationDate": 1893456000}]'
+        )
+
+        self.assertEqual(1, len(cookies))
+        self.assertEqual("Session_id", cookies[0]["name"])
+        self.assertEqual(".yandex.ru", cookies[0]["domain"])
+        self.assertEqual(1893456000, cookies[0]["expiry"])
+
+    def test_parse_netscape_cookie_export(self) -> None:
+        cookies = CloudCenterOrganizationCreator._parse_cookies(
+            ".yandex.ru\tTRUE\t/\tTRUE\t1893456000\tSession_id\tabc"
+        )
+
+        self.assertEqual(1, len(cookies))
+        self.assertEqual("Session_id", cookies[0]["name"])
+        self.assertEqual("abc", cookies[0]["value"])
+
+    def test_parse_netscape_http_only_cookie_export(self) -> None:
+        cookies = CloudCenterOrganizationCreator._parse_cookies(
+            "#HttpOnly_.yandex.ru\tTRUE\t/\tTRUE\t1893456000\tSession_id\tabc"
+        )
+
+        self.assertEqual(1, len(cookies))
+        self.assertTrue(cookies[0]["httpOnly"])
 
 
 if __name__ == "__main__":

@@ -245,7 +245,9 @@ class HunterEngine:
                                 return
                         continue
 
-                    batch = [candidates.pop(0)]
+                    batch_size = self._parallel_cloud_count()
+                    batch = candidates[:batch_size]
+                    del candidates[:batch_size]
                     hunt_tasks = [
                         (
                             cloud,
@@ -277,7 +279,10 @@ class HunterEngine:
                         else:
                             matched = bool(result)
 
-                        if matched or stop_event.is_set():
+                        if matched:
+                            missed_clouds_in_org = 0
+                            continue
+                        if stop_event.is_set():
                             continue
                         hunt_state = await self.state.get_hunt(job_id)
                         cloud_state = hunt_state.cloud_states.get(cloud.cloud_id) if hunt_state else None
@@ -463,9 +468,9 @@ class HunterEngine:
             if stop_event.is_set():
                 return keep_clouds, []
 
-        # YC counts deleting clouds against the org cloud quota. Keep only one active
-        # hunting cloud per scope; successful clouds may remain preserved with matches.
-        target = 1
+        # YC counts deleting clouds against the org cloud quota. Fill the
+        # parallel hunting pool while preserving clouds that already have matches.
+        target = self._parallel_cloud_count()
         total_slots = len(keep_clouds) + blocked_slots + protected_slots
         if len(keep_clouds) < target and total_slots < target:
             missing = target - total_slots
@@ -502,7 +507,7 @@ class HunterEngine:
             and not stop_event.is_set()
             and not await self._scope_targets_reached(job_id, scope)
         ):
-            capacity_target = self.settings.hunt_cloud_target_count
+            capacity_target = self._parallel_cloud_count()
             total_slots = len(keep_clouds) + blocked_slots + protected_slots
             if total_slots < capacity_target:
                 before = len(keep_clouds)
@@ -512,7 +517,7 @@ class HunterEngine:
                     clouds_api=clouds_api,
                     billing_account_id=primary_billing.id,
                     keep_clouds=keep_clouds,
-                    missing=1,
+                    missing=capacity_target - total_slots,
                 )
                 candidates.extend(keep_clouds[before:])
 
@@ -1100,7 +1105,7 @@ class HunterEngine:
             clouds_api=clouds_api,
             billing_account_id=billing_account_id,
             keep_clouds=candidates,
-            missing=1,
+            missing=self._parallel_cloud_count(),
         )
         log_event(
             self.logger,
@@ -1621,6 +1626,12 @@ class HunterEngine:
         prefix = re.sub(r"[^a-zA-Z0-9-]", "-", self.settings.yc_center_org_name_prefix).strip("-") or "ycbot-org"
         suffix = re.sub(r"[^a-z0-9]", "", organization_id.lower())[-6:] or "org"
         return f"{prefix}-{suffix}-{int(time.time())}"
+
+    def _parallel_cloud_count(self) -> int:
+        value = getattr(self.settings, "hunt_parallel_cloud_count", None)
+        if value is None:
+            value = getattr(self.settings, "hunt_cloud_target_count", 1)
+        return max(1, int(value))
 
     @staticmethod
     def _next_vm_name(cloud_id: str, index: int) -> str:

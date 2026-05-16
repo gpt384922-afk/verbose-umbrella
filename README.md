@@ -113,7 +113,7 @@ docker compose up --build -d
 - удаляет облака без видимой активной привязки к биллингу;
 - проверяет, что в организации есть активный оплаченный cloud или свободный слот для его создания.
 
-По умолчанию hunter держит один активный cloud на выбранную организацию. Внутри него он создает batch VM, проверяет публичные IP и удаляет VM с неподходящими адресами. Если нужный IP не найден, cloud удаляется, после освобождения слота создается следующий cloud и поиск продолжается там.
+По умолчанию hunter держит до `HUNT_PARALLEL_CLOUD_COUNT=5` активных cloud'ов на выбранную организацию и запускает поиск в них одновременно. Внутри каждого cloud он создает batch VM, проверяет публичные IP и удаляет VM с неподходящими адресами. Если нужный IP не найден, cloud удаляется, после освобождения слота создается следующий cloud и поиск продолжается там.
 
 Переменная ниже остается лимитом для количества нужных VM/сохраненных успешных cloud'ов в одном хантe:
 
@@ -207,16 +207,24 @@ HUNT_VM_CORES=2
 HUNT_VM_CORE_FRACTION=20
 HUNT_VM_MEMORY_GB=1
 HUNT_VM_USERNAME=user
+HUNT_PARALLEL_CLOUD_COUNT=5
 HUNT_ORGANIZATION_ROTATION_ENABLED=false
 HUNT_ORGANIZATION_ROTATION_CLOUD_MISS_COUNT=5
 YC_CENTER_URL=https://center.yandex.cloud/
+YC_CENTER_AUTO_INSTALL_BROWSER=true
 # Для Anty/готового браузерного профиля удобнее указать debugging address профиля.
 # YC_CENTER_CHROME_DEBUGGER_ADDRESS=127.0.0.1:9222
-# Либо отдельный Chrome profile:
-# YC_CENTER_CHROME_USER_DATA_DIR=/path/to/chrome-profile
+# Либо отдельный Chrome profile. В docker compose по умолчанию используется /data/chrome-profile.
+YC_CENTER_CHROME_USER_DATA_DIR=/data/chrome-profile
+YC_CENTER_CHROME_BINARY=/usr/bin/chromium
+YC_CENTER_SELENIUM_HEADLESS=true
+# На VPS с отдельным Chrome profile обычно лучше закрывать браузер после Selenium-действия.
+YC_CENTER_SELENIUM_QUIT=true
 YC_CENTER_WAIT_SECONDS=90
 YC_CENTER_ORG_NAME_PREFIX=ycbot-org
 ```
+
+Docker-образ сам устанавливает Chromium, chromedriver и системные библиотеки для Selenium. При запуске без Docker бот дополнительно проверяет наличие браузера и, если `YC_CENTER_AUTO_INSTALL_BROWSER=true`, на Debian/Ubuntu попытается поставить пакеты через `apt-get`. Для такого auto-install процесс должен запускаться от root; если прав нет, бот продолжит работу, но Selenium-кнопки вернут ошибку до ручной установки браузера.
 
 Legacy-настройки старого VPC address flow больше не управляют основным хантингом:
 

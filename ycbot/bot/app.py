@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -18,6 +19,7 @@ from ycbot.bot.runtime import BotRuntimeScope
 from ycbot.config import get_settings
 from ycbot.core.scheduler import HuntScheduler
 from ycbot.utils import log_error, log_event, setup_logging
+from ycbot.yc.browser_setup import ensure_browser_runtime
 
 
 class AccessMiddleware(BaseMiddleware):
@@ -194,10 +196,12 @@ class BranchBotManager:
 async def run_bot() -> None:
     settings = get_settings()
     setup_logging(settings.log_level)
+    logger = logging.getLogger("ycbot")
+    ensure_browser_runtime(settings, logger)
 
     context = await build_context(settings)
     await context.scheduler.start_cleanup()
-    logger = context.logger if hasattr(context, "logger") else __import__("logging").getLogger("ycbot")
+    logger = context.logger if hasattr(context, "logger") else logger
     manager = BranchBotManager(settings=settings, context=context, logger=logger)
     context.hunter.set_match_notifier(manager.send_match_notification)
 

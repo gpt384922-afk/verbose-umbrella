@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -24,6 +25,7 @@ from ycbot.db.repositories import (
 from ycbot.db.session import Database
 from ycbot.utils import log_error, log_event
 from ycbot.yc import CloudsApi, ComputeApi, VpcApi, YcClient
+from ycbot.yc.center import CloudCenterOrganizationCreator
 
 
 @dataclass(slots=True)
@@ -226,6 +228,116 @@ class HuntScheduler:
         }
         log_event(self.logger, "account.directory_refreshed", account_id=account.id, **result)
         return result
+
+    async def create_test_organization(self, account_id: str, *, branch_id: str | None) -> dict[str, str | int]:
+        account = await self._get_account_for_branch(account_id, branch_id)
+        if account is None:
+            raise RuntimeError(f"account not found: {account_id}")
+
+        async with self._account_lock(account_id):
+            async with YcClient(
+                settings=self.settings,
+                oauth_token=account.oauth_token,
+                proxy_url=account.proxy_url,
+                semaphore=self.semaphore,
+                logger=self.logger,
+            ) as client:
+                clouds_api = CloudsApi(client=client, settings=self.settings, logger=self.logger)
+                before = await clouds_api.list_organizations()
+
+            existing_ids = {item.id for item in before}
+            current_org_name = before[0].name if before else None
+            name = self._next_test_organization_name()
+            creator = CloudCenterOrganizationCreator(settings=self.settings, logger=self.logger)
+            created_name = await asyncio.to_thread(
+                creator.create_organization,
+                name,
+                current_organization_name=current_org_name,
+            )
+
+            async with YcClient(
+                settings=self.settings,
+                oauth_token=account.oauth_token,
+                proxy_url=account.proxy_url,
+                semaphore=self.semaphore,
+                logger=self.logger,
+            ) as client:
+                clouds_api = CloudsApi(client=client, settings=self.settings, logger=self.logger)
+                organization = await self._wait_for_created_organization(
+                    clouds_api=clouds_api,
+                    name=created_name,
+                    existing_ids=existing_ids,
+                )
+                organizations = await clouds_api.list_organizations()
+                billing_accounts = await clouds_api.list_billing_accounts()
+
+            async with self.db.session() as session:
+                repo = AccountRepository(session)
+                await repo.replace_organizations(account.id, [asdict(item) for item in organizations])
+                await repo.replace_billing_accounts(account.id, [asdict(item) for item in billing_accounts])
+                await session.commit()
+
+        result = {
+            "id": organization.id,
+            "name": organization.name,
+            "organizations": len(organizations),
+            "billing_accounts": len(billing_accounts),
+        }
+        log_event(self.logger, "account.test_organization.created", account_id=account.id, **result)
+        return result
+
+    async def import_center_cookies(
+        self,
+        account_id: str,
+        *,
+        branch_id: str | None,
+        cookie_text: str,
+    ) -> dict[str, object]:
+        account = await self._get_account_for_branch(account_id, branch_id)
+        if account is None:
+            raise RuntimeError(f"account not found: {account_id}")
+        if not (
+            self.settings.yc_center_chrome_user_data_dir
+            or self.settings.yc_center_chrome_debugger_address
+            or self.settings.yc_center_selenium_remote_url
+        ):
+            raise RuntimeError("set YC_CENTER_CHROME_USER_DATA_DIR or YC_CENTER_CHROME_DEBUGGER_ADDRESS first")
+
+        async with self._account_lock(account_id):
+            creator = CloudCenterOrganizationCreator(settings=self.settings, logger=self.logger)
+            result = await asyncio.to_thread(creator.import_cookies, cookie_text)
+
+        log_event(
+            self.logger,
+            "account.center_cookies.imported",
+            account_id=account.id,
+            imported=result.get("imported"),
+            failed=result.get("failed"),
+        )
+        return result
+
+    async def _wait_for_created_organization(
+        self,
+        *,
+        clouds_api: CloudsApi,
+        name: str,
+        existing_ids: set[str],
+    ):
+        deadline = time.monotonic() + self.settings.yc_center_wait_seconds
+        last_seen = []
+        while time.monotonic() <= deadline:
+            last_seen = await clouds_api.list_organizations()
+            for organization in last_seen:
+                if organization.name == name and organization.id not in existing_ids:
+                    return organization
+            await asyncio.sleep(3)
+
+        known = ", ".join(f"{item.name}:{item.id}" for item in last_seen[:10])
+        raise RuntimeError(f"created organization not found by name={name!r}; seen={known}")
+
+    def _next_test_organization_name(self) -> str:
+        prefix = self.settings.yc_center_org_name_prefix.strip() or "ycbot-org"
+        return f"{prefix}-test-{int(time.time())}"
 
     async def list_accounts(self, *, branch_id: str | None) -> list[dict]:
         async with self.db.session() as session:
