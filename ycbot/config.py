@@ -126,7 +126,7 @@ class Settings(BaseSettings):
     yc_center_chrome_binary: str | None = Field(default=None, alias="YC_CENTER_CHROME_BINARY")
     yc_center_chrome_user_data_dir: str | None = Field(default=".ycbot/chrome-profile", alias="YC_CENTER_CHROME_USER_DATA_DIR")
     yc_center_chrome_debugger_address: str | None = Field(default=None, alias="YC_CENTER_CHROME_DEBUGGER_ADDRESS")
-    yc_center_selenium_headless: bool = Field(default=True, alias="YC_CENTER_SELENIUM_HEADLESS")
+    yc_center_selenium_headless: bool = Field(default=False, alias="YC_CENTER_SELENIUM_HEADLESS")
     yc_center_selenium_quit: bool = Field(default=False, alias="YC_CENTER_SELENIUM_QUIT")
     yc_center_wait_seconds: int = Field(default=90, alias="YC_CENTER_WAIT_SECONDS")
     yc_center_org_name_prefix: str = Field(default="ycbot-org", alias="YC_CENTER_ORG_NAME_PREFIX")

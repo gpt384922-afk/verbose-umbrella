@@ -217,14 +217,14 @@ YC_CENTER_AUTO_INSTALL_BROWSER=true
 # Либо отдельный Chrome profile. В docker compose по умолчанию используется /data/chrome-profile.
 YC_CENTER_CHROME_USER_DATA_DIR=/data/chrome-profile
 YC_CENTER_CHROME_BINARY=/usr/bin/chromium
-YC_CENTER_SELENIUM_HEADLESS=true
+YC_CENTER_SELENIUM_HEADLESS=false
 # На VPS с отдельным Chrome profile обычно лучше закрывать браузер после Selenium-действия.
 YC_CENTER_SELENIUM_QUIT=true
 YC_CENTER_WAIT_SECONDS=90
 YC_CENTER_ORG_NAME_PREFIX=ycbot-org
 ```
 
-Docker-образ сам устанавливает Chromium, chromedriver и системные библиотеки для Selenium. При запуске без Docker бот дополнительно проверяет наличие браузера и, если `YC_CENTER_AUTO_INSTALL_BROWSER=true`, на Debian/Ubuntu попытается поставить пакеты через `apt-get`. Для такого auto-install процесс должен запускаться от root; если прав нет, бот продолжит работу, но Selenium-кнопки вернут ошибку до ручной установки браузера.
+Docker-образ сам устанавливает Chromium, chromedriver, Xvfb и системные библиотеки для Selenium. По умолчанию Cloud Center открывается не в headless-режиме, а в виртуальном дисплее Xvfb: это ближе к обычному браузеру и лучше подходит для `center.yandex.cloud`. При запуске без Docker бот дополнительно проверяет наличие браузера и, если `YC_CENTER_AUTO_INSTALL_BROWSER=true`, на Debian/Ubuntu попытается поставить пакеты через `apt-get`. Для такого auto-install процесс должен запускаться от root; если прав нет, бот продолжит работу, но Selenium-кнопки вернут ошибку до ручной установки браузера/Xvfb.
 
 Прокси для Cloud Center задается отдельно в карточке аккаунта кнопкой `Указать center proxy`. Он применяется только к Selenium/cookies/созданию организаций и не используется для Yandex Cloud API, чтобы синхронизация и хант не падали из-за антикапча-прокси.
 

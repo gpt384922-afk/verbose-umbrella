@@ -8,6 +8,7 @@ RUN apt-get update \
         fonts-liberation \
         libnss3 \
         libxss1 \
+        xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -21,7 +22,7 @@ RUN mkdir -p /data/chrome-profile
 
 ENV YC_CENTER_CHROME_BINARY=/usr/bin/chromium \
     YC_CENTER_CHROME_USER_DATA_DIR=/data/chrome-profile \
-    YC_CENTER_SELENIUM_HEADLESS=true \
+    YC_CENTER_SELENIUM_HEADLESS=false \
     YC_CENTER_SELENIUM_QUIT=true
 
 CMD ["python", "-m", "ycbot.bot"]
