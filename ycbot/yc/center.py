@@ -4,6 +4,7 @@ import json
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 
 from ycbot.config import Settings
 from ycbot.utils import log_event
@@ -124,6 +125,7 @@ class CloudCenterOrganizationCreator:
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
 
+        self._cleanup_stale_profile_locks()
         options = Options()
         if self.settings.yc_center_chrome_binary:
             options.binary_location = self.settings.yc_center_chrome_binary
@@ -134,16 +136,50 @@ class CloudCenterOrganizationCreator:
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-software-rasterizer")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--no-first-run")
+        options.add_argument("--no-default-browser-check")
+        options.add_argument("--password-store=basic")
+        options.add_argument("--use-mock-keychain")
+        options.add_argument("--remote-debugging-port=0")
         options.add_argument("--window-size=1440,1200")
         if self.settings.yc_center_selenium_headless and not self.settings.yc_center_chrome_debugger_address:
             options.add_argument("--headless=new")
 
+        log_event(
+            self.logger,
+            "center.browser.start",
+            binary=self.settings.yc_center_chrome_binary or "auto",
+            profile=self.settings.yc_center_chrome_user_data_dir or "-",
+            headless=self.settings.yc_center_selenium_headless,
+            remote=bool(self.settings.yc_center_selenium_remote_url),
+            debugger=bool(self.settings.yc_center_chrome_debugger_address),
+        )
         if self.settings.yc_center_selenium_remote_url:
             return webdriver.Remote(
                 command_executor=self.settings.yc_center_selenium_remote_url,
                 options=options,
             )
         return webdriver.Chrome(options=options)
+
+    def _cleanup_stale_profile_locks(self) -> None:
+        if (
+            not self.settings.yc_center_chrome_user_data_dir
+            or self.settings.yc_center_chrome_debugger_address
+            or self.settings.yc_center_selenium_remote_url
+        ):
+            return
+        profile_dir = Path(self.settings.yc_center_chrome_user_data_dir)
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+            path = profile_dir / name
+            try:
+                if path.exists() or path.is_symlink():
+                    path.unlink()
+            except OSError:
+                continue
 
     def _configure_driver_timeouts(self, driver) -> None:
         timeout = max(10, min(int(self.settings.yc_center_wait_seconds), 30))
